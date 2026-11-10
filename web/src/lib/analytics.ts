@@ -72,13 +72,23 @@ export function initAnalytics() {
 // Report SPA route changes to every enabled analytics provider.
 export function trackPageview(path: string) {
     try {
+        const safePath = sanitizeAnalyticsPath(path);
         if (active.ga4 && window.gtag) {
-            window.gtag("event", "page_view", { page_path: path, page_location: window.location.href });
+            window.gtag("event", "page_view", { page_path: safePath, page_location: `${window.location.origin}${safePath}` });
         }
         if (active.baidu && window._hmt) {
-            window._hmt.push(["_trackPageview", path]);
+            window._hmt.push(["_trackPageview", safePath]);
         }
     } catch {
         /* Ignore analytics reporting errors. */
+    }
+}
+
+function sanitizeAnalyticsPath(path: string) {
+    try {
+        const url = new URL(path, window.location.origin);
+        return `${url.pathname || "/"}`;
+    } catch {
+        return path.split(/[?#]/, 1)[0] || "/";
     }
 }

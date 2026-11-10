@@ -61,6 +61,8 @@ docker compose -f docker-compose.local.yml up -d --build
 | --- | --- |
 | `ANALYTICS_GA4_ID` | Google Analytics 4 衡量 ID（`G-XXXX`） |
 | `ANALYTICS_BAIDU_ID` | 百度统计站点 ID（`hm.js?` 后面那串 hash） |
+| `NEW_API_BASE_URL` | New API 地址，默认 `https://api.scai.my` |
+| `NEW_API_PROXY_PATH` | 画布同源代理路径，默认 `/new-api`；需由站点反向代理到 New API |
 
 在 `docker-compose.yml` 的 `environment` 中配置（文件内已附注释示例），下例同时启用 GA4 与百度：
 

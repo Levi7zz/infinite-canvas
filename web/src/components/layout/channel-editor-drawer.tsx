@@ -18,6 +18,10 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
         { label: "OpenAI", value: "openai" },
         { label: "Gemini", value: "gemini" },
     ];
+    const modelApiFormatOptions: Array<{ label: string; value: ApiCallFormat | "channel" }> = [
+        { label: t("config.channelEditor.inheritProtocol"), value: "channel" },
+        ...apiFormatOptions,
+    ];
     const capabilityOptions: Array<{ label: string; value: ModelCapability }> = ["image", "video", "text", "audio"].map((value) => ({ label: t(`config.channelEditor.capabilities.${value}`), value: value as ModelCapability }));
 
     useEffect(() => {
@@ -40,6 +44,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
     };
 
     const setCapability = (name: string, capability: ModelCapability) => setModels(draft.models.map((model) => (model.name === name ? { ...model, capability } : model)));
+    const setModelApiFormat = (name: string, apiFormat: ApiCallFormat | "channel") => setModels(draft.models.map((model) => (model.name === name ? { ...model, apiFormat: apiFormat === "channel" ? undefined : apiFormat } : model)));
     const setScript = (name: string, script: string) => setModels(draft.models.map((model) => (model.name === name ? { ...model, script: script || undefined } : model)));
     const removeModel = (name: string) => setModels(draft.models.filter((model) => model.name !== name));
 
@@ -101,6 +106,7 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open: 
                                 {model.name}
                             </span>
                             <div className="flex shrink-0 items-center gap-2">
+                                <Select size="small" aria-label={t("config.channelEditor.modelProtocol", { model: model.name })} value={model.apiFormat || "channel"} options={modelApiFormatOptions} onChange={(value) => setModelApiFormat(model.name, value as ApiCallFormat | "channel")} />
                                 <Segmented size="small" value={model.capability} options={capabilityOptions} onChange={(value) => setCapability(model.name, value as ModelCapability)} />
                                 <Button size="small" type={model.script ? "primary" : "default"} ghost={Boolean(model.script)} onClick={() => setScriptTarget({ name: model.name, capability: model.capability, value: model.script || "" })}>
                                     {t(model.script ? "config.channelEditor.scriptReady" : "config.channelEditor.script")}

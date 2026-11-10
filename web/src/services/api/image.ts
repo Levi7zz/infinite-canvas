@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { buildApiUrl, guessCapability, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ChannelModel, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -856,32 +856,77 @@ export async function requestImageQuestion(config: AiConfig, messages: AiTextMes
     }
 }
 
-export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+type OpenAiModelRecord = {
+    id?: string;
+    capability?: unknown;
+    capabilities?: unknown;
+    endpoint?: unknown;
+    type?: unknown;
+    modality?: unknown;
+    modalities?: unknown;
+    input_modalities?: unknown;
+    output_modalities?: unknown;
+    metadata?: Record<string, unknown>;
+};
+
+function capabilityTextValues(value: unknown, key = ""): string[] {
+    if (typeof value === "string") return [value, key];
+    if (Array.isArray(value)) return value.flatMap((item) => capabilityTextValues(item, key));
+    if (value && typeof value === "object") {
+        return Object.entries(value).flatMap(([entryKey, entryValue]) => [entryKey, ...capabilityTextValues(entryValue, entryKey)]);
+    }
+    return key ? [key] : [];
+}
+
+function capabilityFromModelRecord(model: OpenAiModelRecord): ModelCapability | undefined {
+    const values = [model.capability, model.capabilities, model.endpoint, model.type, model.modality, model.modalities, model.input_modalities, model.output_modalities, model.metadata?.capability, model.metadata?.capabilities, model.metadata?.endpoint]
+        .flatMap((value) => capabilityTextValues(value))
+        .map((value) => value.toLowerCase());
+    if (values.some((value) => value.includes("video"))) return "video";
+    if (values.some((value) => value.includes("image") || value.includes("vision"))) return "image";
+    if (values.some((value) => value.includes("audio") || value.includes("speech") || value.includes("tts"))) return "audio";
+    if (values.some((value) => value.includes("text") || value.includes("chat") || value.includes("completion"))) return "text";
+    return undefined;
+}
+
+function modelDefinitionsFromRecords(records: OpenAiModelRecord[]) {
+    const seen = new Set<string>();
+    const models: ChannelModel[] = [];
+    for (const record of records) {
+        const name = record.id?.trim();
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        models.push({ name, capability: capabilityFromModelRecord(record) || guessCapability(name) });
+    }
+    return models.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function fetchChannelModelDefinitions(channel: Pick<ModelChannel, "baseUrl" | "apiKey" | "apiFormat">): Promise<ChannelModel[]> {
     try {
-        if (config.apiFormat === "gemini") {
-            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...config }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...config }) });
+        if (channel.apiFormat === "gemini") {
+            const response = await axios.get<GeminiPayload>(geminiApiUrl({ ...defaultGeminiConfig, ...channel }), { headers: geminiHeaders({ ...defaultGeminiConfig, ...channel }) });
             validateGeminiPayload(response.data);
-            return (response.data.models || [])
-                .map((model) => model.name?.replace(/^models\//, ""))
-                .filter((id): id is string => Boolean(id))
-                .sort((a, b) => a.localeCompare(b));
+            return markGeminiImageModels(modelDefinitionsFromRecords((response.data.models || []).map((model) => ({ id: model.name?.replace(/^models\//, "") }))));
         }
-        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(buildApiUrl(config.baseUrl, "/models"), {
-            headers: {
-                Authorization: `Bearer ${config.apiKey}`,
-            },
+        const response = await axios.get<{ data?: OpenAiModelRecord[]; error?: { message?: string } }>(buildApiUrl(channel.baseUrl, "/models"), {
+            headers: { Authorization: `Bearer ${channel.apiKey}` },
         });
-        return (response.data.data || [])
-            .map((model) => model.id)
-            .filter((id): id is string => Boolean(id))
-            .sort((a, b) => a.localeCompare(b));
+        return markGeminiImageModels(modelDefinitionsFromRecords(response.data.data || []));
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("modelReadFailed")));
     }
 }
 
+function markGeminiImageModels(models: ChannelModel[]) {
+    return models.map((model) => (/^(?:gemini|imagen)(?:[-/]|$)/i.test(model.name) && model.capability === "image" ? { ...model, apiFormat: "gemini" as const } : model));
+}
+
+export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat">) {
+    return (await fetchChannelModelDefinitions(config)).map((model) => model.name);
+}
+
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    return (await fetchChannelModelDefinitions(channel)).map((model) => model.name);
 }
 
 const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {

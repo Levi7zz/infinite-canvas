@@ -47,6 +47,8 @@ No analytics are enabled by default. A deployment can enable GA4, Baidu Analytic
 | --- | --- |
 | `ANALYTICS_GA4_ID` | Google Analytics 4 measurement ID (`G-XXXX`) |
 | `ANALYTICS_BAIDU_ID` | Baidu site ID, the hash after `hm.js?` |
+| `NEW_API_BASE_URL` | New API address, defaulting to `https://api.scai.my` |
+| `NEW_API_PROXY_PATH` | Same-origin canvas proxy path, defaulting to `/new-api`; route it to New API at the site proxy |
 
 ```yaml
 services:

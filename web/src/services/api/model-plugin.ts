@@ -446,7 +446,7 @@ return await generateImage({
  * @param {string} params.mode - "frames" uses first/last frame fields; "reference" sends all images as references. More than 2 images become "reference".
  * @param {string|number} params.seconds - duration
  * @param {string} params.size - output size, e.g. "1280x720"
- * @param {string} params.resolution - e.g. "720p"
+ * @param {string} params.resolution - e.g. "720p", "2K", or "4K"
  * @param {boolean} params.generateAudio
  * @param {boolean} params.watermark
  * @param {string} model
@@ -569,7 +569,7 @@ return await generateVideo({
  * @param {string|number} params.seconds - sent as durationSeconds
  * @param {string} params.size - pixel size; mapped to aspectRatio when needed
  * @param {string} params.ratio - aspect ratio, e.g. "16:9"
- * @param {string} params.resolution - e.g. "720p"
+ * @param {string} params.resolution - e.g. "720p", "2K", or "4K"
  * @param {boolean} params.generateAudio
  * @param {boolean} params.watermark - sent as addWatermark
  * @param {string} model

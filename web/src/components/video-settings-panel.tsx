@@ -11,7 +11,10 @@ import { type AiConfig } from "@/stores/use-config-store";
 const resolutionOptions = [
     { value: "480", label: "480p" },
     { value: "720", label: "720p" },
+    { value: "768", label: "768p" },
     { value: "1080", label: "1080p" },
+    { value: "2k", label: "2K" },
+    { value: "4k", label: "4K" },
 ];
 const videoModeOptions = [
     { value: "frames", labelKey: "frames" },
@@ -51,7 +54,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.video.title")}</div> : null}
                 <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
-                    <div className="grid grid-cols-4 gap-2.5">
+                    <div className="grid grid-cols-3 gap-2.5">
                         {resolutionOptions.map((item) => (
                             <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => selectResolution(item.value)}>
                                 {item.label}
@@ -59,6 +62,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                         <ResolutionInput value={resolution} theme={theme} onChange={selectResolution} />
                     </div>
+                    <div className="text-xs opacity-60">{t("settingsPanels.video.resolutionHint")}</div>
                 </SettingGroup>
                 <SettingGroup title={t("settingsPanels.video.size")} color={theme.node.muted}>
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
@@ -106,7 +110,8 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
 }
 
 export function videoResolutionLabel(value: string) {
-    return `${parseVideoResolution(value)}p`;
+    const resolution = parseVideoResolution(value);
+    return resolution === "2k" || resolution === "4k" ? resolution.toUpperCase() : `${resolution}p`;
 }
 
 export function videoSizeLabel(value: string) {
@@ -165,9 +170,9 @@ function SettingGroup({ title, color, children }: { title: string; color: string
 function ResolutionInput({ value, theme, onChange }: { value: string; theme: CanvasTheme; onChange: (value: string) => void }) {
     return (
         <label className="flex h-9 overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
-            <input type="number" min={1} className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />
+            <input type="text" inputMode="numeric" className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none" value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />
             <span className="grid w-7 place-items-center pr-1" style={{ color: theme.node.muted }}>
-                p
+                {value === "2k" || value === "4k" ? "" : "p"}
             </span>
         </label>
     );

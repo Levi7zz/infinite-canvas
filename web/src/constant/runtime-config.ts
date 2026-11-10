@@ -8,6 +8,8 @@
 type RuntimeConfig = {
     ANALYTICS_GA4_ID?: string; // GA4 measurement ID (G-XXXX)
     ANALYTICS_BAIDU_ID?: string; // Baidu Analytics site ID
+    NEW_API_BASE_URL?: string;
+    NEW_API_PROXY_PATH?: string;
 };
 
 declare global {
@@ -27,3 +29,5 @@ function read(key: keyof RuntimeConfig, buildTime: string | undefined, fallback 
 
 export const ANALYTICS_GA4_ID = read("ANALYTICS_GA4_ID", import.meta.env.VITE_ANALYTICS_GA4_ID);
 export const ANALYTICS_BAIDU_ID = read("ANALYTICS_BAIDU_ID", import.meta.env.VITE_ANALYTICS_BAIDU_ID);
+export const NEW_API_BASE_URL = read("NEW_API_BASE_URL", import.meta.env.VITE_NEW_API_BASE_URL, "https://api.scai.my").replace(/\/+$/, "");
+export const NEW_API_PROXY_PATH = read("NEW_API_PROXY_PATH", import.meta.env.VITE_NEW_API_PROXY_PATH, "/new-api").replace(/\/+$/, "") || "/new-api";

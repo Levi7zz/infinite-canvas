@@ -1,6 +1,6 @@
 import { App, Button, Form, Input, Modal, Progress, Radio, Select, Switch, Tabs } from "antd";
 import type { TFunction } from "i18next";
-import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
+import { Cloud, Download, LogIn, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,6 +14,7 @@ import type { AppLocale } from "@/i18n";
 import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
+import { fetchChannelModelDefinitions } from "@/services/api/image";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
 import { computeMediaSize, inferMediaRatio, inferMediaScale, mediaScaleOptions, parseVideoResolution } from "@/lib/media-size";
 import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
@@ -57,6 +58,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [editingChannelId, setEditingChannelId] = useState("");
     const [testingWebdav, setTestingWebdav] = useState(false);
     const [syncingWebdav, setSyncingWebdav] = useState(false);
+    const [refreshingChannelId, setRefreshingChannelId] = useState("");
+    const [refreshingAllChannels, setRefreshingAllChannels] = useState(false);
     const [webdavSyncStatus, setWebdavSyncStatus] = useState("");
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
     const config = useConfigStore((state) => state.config);
@@ -65,7 +68,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
+    const openNewApiLoginDialog = useConfigStore((state) => state.openNewApiLoginDialog);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
+    const refreshChannelModels = useConfigStore((state) => state.refreshChannelModels);
     const webdavReady = Boolean(webdav.url.trim());
     const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
@@ -82,6 +87,11 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
         if (!ready) return;
         message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
         clearPromptContinue();
+    };
+
+    const openLoginSetup = () => {
+        setConfigDialogOpen(false);
+        openNewApiLoginDialog();
     };
 
     const loadConfigFile = async (file: File) => {
@@ -104,15 +114,69 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const deleteChannel = (id: string) => {
-        if (config.channels.length <= 1) {
-            message.warning(t("config.channels.keepOne"));
-            return;
-        }
         updateChannels(config.channels.filter((channel) => channel.id !== id));
     };
 
     const saveChannel = (channel: ModelChannel) => {
         updateChannels(config.channels.map((item) => (item.id === channel.id ? channel : item)));
+    };
+
+    const refreshChannel = async (channel: ModelChannel, showMessage = true) => {
+        if (!channel.baseUrl.trim() || !channel.apiKey.trim()) {
+            if (showMessage) message.error(t("config.channels.refreshMissingConfig"));
+            return { ok: false, count: 0 };
+        }
+        try {
+            const models = await fetchChannelModelDefinitions(channel);
+            if (!models.length) {
+                if (showMessage) message.warning(t("config.channels.refreshEmpty"));
+                return { ok: false, count: 0 };
+            }
+            refreshChannelModels(channel.id, models);
+            if (showMessage) message.success(t("config.channels.refreshed", { count: models.length }));
+            return { ok: true, count: models.length };
+        } catch (error) {
+            if (showMessage) message.error(t("config.channels.refreshFailed", { error: error instanceof Error ? error.message : t("config.modelSelect.fetchFailed") }));
+            return { ok: false, count: 0 };
+        }
+    };
+
+    const handleRefreshChannel = async (channel: ModelChannel) => {
+        setRefreshingChannelId(channel.id);
+        try {
+            await refreshChannel(channel);
+        } finally {
+            setRefreshingChannelId("");
+        }
+    };
+
+    const handleRefreshAllChannels = async () => {
+        const channels = config.channels.filter((channel) => channel.baseUrl.trim() && channel.apiKey.trim());
+        if (!channels.length) {
+            message.error(t("config.channels.refreshMissingConfig"));
+            return;
+        }
+        setRefreshingAllChannels(true);
+        try {
+            const results = await Promise.allSettled(channels.map((channel) => fetchChannelModelDefinitions(channel)));
+            let updated = 0;
+            let failed = 0;
+            let empty = 0;
+            results.forEach((result, index) => {
+                if (result.status === "fulfilled" && result.value.length) {
+                    refreshChannelModels(channels[index].id, result.value);
+                    updated += 1;
+                } else if (result.status === "fulfilled") {
+                    empty += 1;
+                } else {
+                    failed += 1;
+                }
+            });
+            if (updated) message.success(t("config.channels.refreshedAll", { channels: updated }));
+            if (empty || failed) message.warning(t("config.channels.refreshPartial", { empty, failed }));
+        } finally {
+            setRefreshingAllChannels(false);
+        }
     };
 
     const testWebdav = async () => {
@@ -176,6 +240,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                     <Button icon={<Download className="size-4" />} onClick={exportAppConfig}>
                         {t("config.export")}
                     </Button>
+                    <Button type="primary" icon={<LogIn className="size-4" />} onClick={openLoginSetup}>
+                        {t("config.loginSetup")}
+                    </Button>
                     <input ref={configInputRef} type="file" accept="application/json,.json" className="hidden" onChange={(event) => event.target.files?.[0] && void loadConfigFile(event.target.files[0])} />
                 </div>
             </div>
@@ -189,10 +256,15 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                         children: (
                             <div>
                                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                                    <div className="text-xs text-stone-500">{t("config.channels.description")}</div>
-                                    <Button type="primary" icon={<Plus className="size-4" />} onClick={addChannel}>
-                                        {t("config.channels.add")}
-                                    </Button>
+                                    <div className="min-w-0 text-xs text-stone-500">{t("config.channels.description")}</div>
+                                    <div className="flex shrink-0 flex-wrap gap-2">
+                                        <Button icon={<RefreshCw className="size-4" />} loading={refreshingAllChannels} disabled={refreshingChannelId !== ""} onClick={() => void handleRefreshAllChannels()}>
+                                            {t("config.channels.refreshAll")}
+                                        </Button>
+                                        <Button type="primary" icon={<Plus className="size-4" />} disabled={refreshingAllChannels} onClick={addChannel}>
+                                            {t("config.channels.add")}
+                                        </Button>
+                                    </div>
                                 </div>
                                 <div className="space-y-2">
                                     {config.channels.map((channel) => (
@@ -203,7 +275,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                                     {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
                                                 </div>
                                             </div>
-                                            <div className="flex shrink-0 gap-2">
+                                            <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                                                <Button size="small" icon={<RefreshCw className="size-3.5" />} loading={refreshingChannelId === channel.id} disabled={refreshingAllChannels || refreshingChannelId !== ""} onClick={() => void handleRefreshChannel(channel)}>
+                                                    {t("config.channels.refresh")}
+                                                </Button>
                                                 <Button size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
                                                     {t("common.edit")}
                                                 </Button>
@@ -394,9 +469,9 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
         ...config,
         channels,
         models: modelOptionsFromChannels(channels),
-        baseUrl: channels[0]?.baseUrl || config.baseUrl,
-        apiKey: channels[0]?.apiKey || config.apiKey,
-        apiFormat: channels[0]?.apiFormat || config.apiFormat,
+        baseUrl: channels[0]?.baseUrl || "",
+        apiKey: channels[0]?.apiKey || "",
+        apiFormat: channels[0]?.apiFormat || "openai",
     };
     return {
         ...next,

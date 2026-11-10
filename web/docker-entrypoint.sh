@@ -13,10 +13,14 @@ sanitize_id() {
 
 GA4_ID=$(sanitize_id "${ANALYTICS_GA4_ID:-}")
 BAIDU_ID=$(sanitize_id "${ANALYTICS_BAIDU_ID:-}")
+NEW_API_BASE_URL_VALUE=${NEW_API_BASE_URL:-https://api.scai.my}
+NEW_API_PROXY_PATH_VALUE=${NEW_API_PROXY_PATH:-/new-api}
 
 cat > /usr/share/nginx/html/config.js <<EOF
 window.__RUNTIME_CONFIG__ = {
   ANALYTICS_GA4_ID: "${GA4_ID}",
-  ANALYTICS_BAIDU_ID: "${BAIDU_ID}"
+  ANALYTICS_BAIDU_ID: "${BAIDU_ID}",
+  NEW_API_BASE_URL: "${NEW_API_BASE_URL_VALUE}",
+  NEW_API_PROXY_PATH: "${NEW_API_PROXY_PATH_VALUE}"
 };
 EOF

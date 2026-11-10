@@ -56,9 +56,11 @@ See [Third-party Prompt Sources](/docs/overview/third-party-prompt-repositories)
 
 ## Configuration and synchronization
 
+- When a canvas has no configured provider, it can sign in to the deployed New API account, create or reuse the “Infinite Canvas” Auto key allowed by that account, and load its models. Other OpenAI-compatible services can still be added manually.
 - Export and import channel, model, generation, prompt-source, and WebDAV settings.
 - Store application data and API credentials locally in the browser.
 - Use WebDAV for optional cross-device synchronization.
+- The New API sign-in is used only to provision the canvas key; the session is logged out after setup, and the key remains in this browser.
 
 ## Current limitations
 
