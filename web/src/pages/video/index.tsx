@@ -1,834 +1,323 @@
-import { ArrowLeft, ArrowRight, BookOpen, CheckSquare, ClipboardPaste, Download, FolderPlus, History, LoaderCircle, Plus, RefreshCw, SlidersHorizontal, Sparkles, Trash2, Upload, VideoIcon } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore, type DragEvent } from "react";
-import { App, Button, Checkbox, Drawer, Empty, Input, Modal, Tag, Typography } from "antd";
-import localforage from "localforage";
+import { App, Button, Input, Modal, Select, Switch, Tooltip } from "antd";
+import { Aperture, ArrowRight, BookOpen, ChevronDown, ClipboardPaste, Clapperboard, Film, Images, LogIn, LogOut, Plus, RefreshCw, SlidersHorizontal, Upload, X } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { nanoid } from "nanoid";
-import { saveAs } from "file-saver";
-import { useTranslation } from "react-i18next";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
-import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
-import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoResolutionLabel, videoSizeLabel } from "@/components/video-settings-panel";
-import { canvasThemes } from "@/lib/canvas-theme";
-import { clampVideoSeconds } from "@/lib/media-size";
-import { formatBytes, formatDuration } from "@/lib/image-utils";
-import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
-import { resolveImageUrl, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
-import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
-import { useAssetStore } from "@/stores/use-asset-store";
+import { videoResolutionLabel } from "@/components/video-settings-panel";
+import { parseVideoResolution, videoRatioOptions } from "@/lib/media-size";
+import { applyScaiModelCapabilities, estimateVideoPrice, fetchScaiPricing, formatVideoEstimate, scaiPricingQueryKey } from "@/services/api/scai-pricing";
+import { fetchChannelModelDefinitions } from "@/services/api/image";
+import { videoRequestPriceFacts } from "@/services/api/video";
+import { uploadImage } from "@/services/image-storage";
+import { useConfigStore, type ModelChannel } from "@/stores/use-config-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
-import { boolConfig, modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
-import { useThemeStore } from "@/stores/use-theme-store";
-import type { ReferenceImage } from "@/types/image";
-import i18n from "@/i18n";
+import { constrainStudioDraft, getStudioModels, manualResolutions, selectStudioModel, studioCapabilities, studioDraftFromConfig, studioModelLabel, studioRequest, type StudioModel } from "./studio-models";
+import { hydrateDraft, initialDraft, writeDraft, type StudioDraft, type StudioJob } from "./studio-storage";
+import { StudioPreview, StudioWorks } from "./studio-results";
+import { useStudioHistory } from "./use-studio-history";
+import "./studio.css";
 
-type GeneratedVideo = {
-    id: string;
-    url: string;
-    storageKey: string;
-    durationMs: number;
-    width: number;
-    height: number;
-    bytes: number;
-    mimeType: string;
-};
-
-type GenerationResult = {
-    id: string;
-    status: "pending" | "success" | "failed";
-    video?: GeneratedVideo;
-    error?: string;
-    task?: VideoGenerationTask;
-};
-
-type GenerationLog = {
-    id: string;
-    createdAt: number;
-    title: string;
-    prompt: string;
-    time: string;
-    model: string;
-    config: GenerationLogConfig;
-    references: ReferenceImage[];
-    durationMs: number;
-    size: string;
-    resolution: string;
-    seconds: string;
-    status: "pending" | "success" | "failed";
-    task?: VideoGenerationTask;
-    video?: GeneratedVideo;
-    error?: string;
-};
-
-type GenerationLogConfig = Pick<AiConfig, "model" | "videoModel" | "size" | "vquality" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoMode">;
-
-type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
-
-const LOG_STORE_KEY = "infinite-canvas:video_generation_logs";
-const logStore = localforage.createInstance({ name: "infinite-canvas", storeName: "video_generation_logs" });
+const examples = [
+    { name: "电影运镜", prompt: "清晨的山间公路，一辆银色汽车驶过弯道。低机位从远处跟拍，镜头平稳推进，晨雾掠过山脊，冷暖光线交替，写实电影质感。" },
+    { name: "商品展示", prompt: "一只哑光银色耳机放在黑色展台上。镜头绕主体缓慢旋转，柔和的轮廓光扫过表面，最后停在耳罩细节，干净的商业摄影风格。" },
+    { name: "竖屏短片", ratio: "9:16", prompt: "雨后的街边咖啡店，杯子冒出丝丝热气。镜头从桌面缓缓抬起，窗外斑马线上的行人虚化掠过，竖屏构图，温暖自然光。" },
+];
+const externalSite = "https://scai.my";
+const referenceLimit = 7; // Existing workbench limit.
 
 export default function VideoPage() {
-    const { message } = App.useApp();
-    const { t } = useTranslation();
-    useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
-    const fileInputRef = useRef<HTMLInputElement>(null);
-    const dragDepthRef = useRef(0);
-    const activeLogIdsRef = useRef<Set<string>>(new Set());
+    const channels = useConfigStore((state) => state.config.channels);
+    const loginOpen = useConfigStore((state) => state.isNewApiLoginOpen);
+    const openLogin = useConfigStore((state) => state.openNewApiLoginDialog);
+    const linked = channels.find((channel) => channel.scai && channel.apiKey.trim());
+    const owner = linked?.scai ? `scai:${linked.scai.id}` : "local";
+    const [transfer, setTransfer] = useState<StudioDraft>();
+
+    useEffect(() => {
+        if (!loginOpen && transfer) setTransfer(undefined);
+    }, [loginOpen, transfer]);
+
+    return <VideoStudio key={owner} owner={owner} accountChannel={linked} incomingDraft={linked ? transfer : undefined} login={(draft) => {
+        if (!linked && (draft.prompt.trim() || draft.images.length)) setTransfer(draft);
+        openLogin();
+    }} />;
+}
+
+function VideoStudio({ owner, accountChannel, incomingDraft, login }: { owner: string; accountChannel?: ModelChannel; incomingDraft?: StudioDraft; login: (draft: StudioDraft) => void }) {
+    const { message, modal } = App.useApp();
+    const client = useQueryClient();
+    const prices = useQuery({ queryKey: scaiPricingQueryKey, queryFn: ({ signal }) => fetchScaiPricing(signal) });
     const config = useConfigStore((state) => state.config);
-    const effectiveConfig = useEffectiveConfig();
-    const updateConfig = useConfigStore((state) => state.updateConfig);
-    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
-    const addAsset = useAssetStore((state) => state.addAsset);
-    const [prompt, setPrompt] = useState("");
-    const [references, setReferences] = useState<ReferenceImage[]>([]);
-    const [results, setResults] = useState<GenerationResult[]>([]);
-    const [logs, setLogs] = useState<GenerationLog[]>([]);
-    const [running, setRunning] = useState(false);
-    const [logsOpen, setLogsOpen] = useState(false);
-    const [settingsOpen, setSettingsOpen] = useState(false);
-    const [promptDialogOpen, setPromptDialogOpen] = useState(false);
-    const [assetPickerOpen, setAssetPickerOpen] = useState(false);
-    const [startedAt, setStartedAt] = useState(0);
-    const [elapsedMs, setElapsedMs] = useState(0);
-    const [selectedLogIds, setSelectedLogIds] = useState<string[]>([]);
-    const [previewLog, setPreviewLog] = useState<GenerationLog | null>(null);
-    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-    const [referenceDragTarget, setReferenceDragTarget] = useState(false);
-    const [autoRunToken, setAutoRunToken] = useState(0);
     const videoCommand = useWorkbenchAgentStore((state) => state.videoCommand);
     const clearVideoCommand = useWorkbenchAgentStore((state) => state.clearVideoCommand);
-    const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
-    const processedCommandRef = useRef(0);
-    const agentTaskIdRef = useRef<string | undefined>(undefined);
-
-    const model = effectiveConfig.videoModel || effectiveConfig.model;
-    const canGenerate = Boolean(prompt.trim());
+    const fileInput = useRef<HTMLInputElement>(null);
+    const { loaded, busy, activeId, submit, query, discard } = useStudioHistory(owner, (error) => { void message.error(error); });
+    const [guestDraft, setGuestDraft] = useState(incomingDraft);
+    const [edited, setEdited] = useState<StudioDraft>();
+    const [selectedId, setSelectedId] = useState<string>();
+    const [refreshing, setRefreshing] = useState(false);
+    const [comparison, setComparison] = useState(false);
+    const [advanced, setAdvanced] = useState(false);
+    const [promptsOpen, setPromptsOpen] = useState(false);
+    const [assetsOpen, setAssetsOpen] = useState(false);
+    const studioConfig = useMemo(() => accountChannel ? { ...config, channels: [accountChannel] } : config, [accountChannel, config]);
+    const models = useMemo(() => getStudioModels(studioConfig, prices.data), [studioConfig, prices.data]);
+    const scaiVideo = Boolean(accountChannel && models.some((option) => option.channel?.id === accountChannel.id));
+    const defaults = accountChannel ? { ...initialDraft, model: config.videoModel } : config.videoModel ? studioDraftFromConfig(config, initialDraft) : initialDraft;
+    const raw = edited || loaded?.draft || guestDraft || defaults;
+    const model = selectStudioModel(models, raw.model || config.videoModel) || models[0];
+    const selectionMissing = Boolean(raw.model && models.length && !selectStudioModel(models, raw.model));
+    const draft = constrainStudioDraft(raw, model?.row);
+    const caps = studioCapabilities(model?.row);
+    const resolutionOptions = caps.resolutions.length ? caps.resolutions : Array.from(new Set([...manualResolutions, draft.resolution]));
+    const request = model && studioRequest(studioConfig, draft, model);
+    const facts = request && videoRequestPriceFacts(request, draft.images.length);
+    const estimate = facts && estimateVideoPrice(prices.data, model?.row, facts, model?.channel);
+    const selected = loaded?.jobs.find((job) => job.id === selectedId) || loaded?.jobs[0];
+    const site = prices.data?.siteUrl || externalSite;
+    const allowSubmit = Boolean(loaded && !loaded.failed && !selectionMissing && !busy && model && draft.prompt.trim());
 
     useEffect(() => {
-        if (!running || !startedAt) return;
-        const timer = window.setInterval(() => setElapsedMs(performance.now() - startedAt), 1000);
-        return () => window.clearInterval(timer);
-    }, [running, startedAt]);
+        if (loaded && !loaded.failed && edited) void writeDraft(owner, edited).catch(() => { void message.warning("浏览器无法保存草稿"); });
+    }, [edited, loaded?.owner, loaded?.failed, message, owner]);
 
     useEffect(() => {
-        void refreshLogs();
-    }, []);
+        if (loaded && !loaded.failed && !loaded.draft && guestDraft) {
+            setEdited((previous) => previous || guestDraft);
+            setGuestDraft(undefined);
+        }
+    }, [loaded, guestDraft]);
 
-    const addReferences = async (files?: FileList | null) => {
-        const selectedFiles = Array.from(files || []);
-        const unsupported = selectedFiles.filter((file) => !file.type.startsWith("image/"));
-        if (unsupported.length) message.warning(t("videoWorkbench.unsupportedFiles"));
-        const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/")).slice(0, 7 - references.length);
-        const nextReferences = await Promise.all(
-            imageFiles.map(async (file) => {
-                const image = await uploadImage(file);
-                return { id: nanoid(), name: file.name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-            }),
-        );
-        setReferences((value) => [...value, ...nextReferences].slice(0, 7));
-    };
+    useEffect(() => {
+        if (!videoCommand || !loaded) return;
+        const next = useConfigStore.getState().config;
+        setEdited((previous) => ({
+            ...studioDraftFromConfig(next, previous || loaded.draft || initialDraft),
+            prompt: videoCommand.prompt ?? previous?.prompt ?? loaded.draft?.prompt ?? "",
+            model: next.videoModel || previous?.model || loaded.draft?.model || "",
+        }));
+        clearVideoCommand();
+    }, [videoCommand, loaded, clearVideoCommand]);
 
-    const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        dragDepthRef.current += 1;
-        if (event.dataTransfer.types.includes("Files")) setReferenceDragTarget(true);
-    };
+    const patch = (settings: Partial<StudioDraft>) => setEdited((previous) => ({ ...(previous || raw), model: previous?.model || raw.model || model?.id || "", ...settings }));
+    const changeModel = (id: string) => setEdited(constrainStudioDraft({ ...draft, model: id }, models.find((option) => option.id === id)?.row));
 
-    const handleReferenceDragLeave = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-        if (!dragDepthRef.current) setReferenceDragTarget(false);
-    };
-
-    const handleReferenceDrop = (event: DragEvent<HTMLDivElement>) => {
-        event.preventDefault();
-        dragDepthRef.current = 0;
-        setReferenceDragTarget(false);
-        void addReferences(event.dataTransfer.files);
-    };
-
-    const addReferencesFromClipboard = async () => {
+    async function addImages(files: Array<{ blob: Blob; name: string }>) {
+        const supported = files.filter(({ blob }) => blob.type.startsWith("image/"));
+        if (!supported.length) return void message.warning("请选择图片文件");
+        if (draft.images.length >= referenceLimit) return void message.info(`最多 ${referenceLimit} 张参考图`);
         try {
-            const items = await navigator.clipboard.read();
-            const blobs = await Promise.all(items.flatMap((item) => item.types.filter((type) => type.startsWith("image/")).map((type) => item.getType(type))));
-            if (!blobs.length) {
-                message.error(t("videoWorkbench.clipboardEmpty"));
+            const next = await Promise.all(supported.slice(0, referenceLimit - draft.images.length).map(async ({ blob, name }) => {
+                const image = await uploadImage(blob);
+                return { id: nanoid(), name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
+            }));
+            setEdited((previous) => {
+                const source = previous || raw;
+                return { ...source, model: source.model || model?.id || "", images: [...source.images, ...next].slice(0, referenceLimit) };
+            });
+        } catch {
+            void message.error("无法读取参考图");
+        }
+    }
+
+    const addFiles = (files: FileList | null) => addImages(Array.from(files || [], (file) => ({ blob: file, name: file.name })));
+    async function pasteImages() {
+        try {
+            const entries = await navigator.clipboard.read();
+            const files = await Promise.all(entries.flatMap((item) => item.types.filter((type) => type.startsWith("image/")).map(async (type) => ({ blob: await item.getType(type), name: "剪贴板图片" }))));
+            await addImages(files);
+        } catch {
+            void message.warning("无法读取剪贴板图片，请上传文件");
+        }
+    }
+
+    async function useAsset(asset: InsertAssetPayload) {
+        setAssetsOpen(false);
+        if (asset.kind === "text") patch({ prompt: asset.content });
+        else if (asset.kind === "image") {
+            try {
+                const image = await uploadImage(asset.dataUrl);
+                patch({ images: [...draft.images, { id: nanoid(), name: asset.title, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey }].slice(0, referenceLimit) });
+            } catch {
+                void message.error("无法读取参考图");
+            }
+        }
+    }
+
+    async function refreshCatalog() {
+        const channel = accountChannel || model?.channel;
+        setRefreshing(true);
+        try {
+            const [catalog, definitions] = await Promise.allSettled([prices.refetch(), channel && fetchChannelModelDefinitions(channel)]);
+            const fresh = catalog.status === "fulfilled" && !catalog.value.isError ? catalog.value.data : undefined;
+            if (channel) {
+                if (definitions.status === "rejected" || !definitions.value?.length) throw new Error("未能获取模型列表，已保留现有配置");
+                const current = useConfigStore.getState().config.channels.find((item) => item.id === channel.id);
+                if (!current || current.apiKey !== channel.apiKey || current.baseUrl !== channel.baseUrl) return;
+                useConfigStore.getState().refreshChannelModels(channel.id, applyScaiModelCapabilities(definitions.value, fresh, current.scai?.autoGroups));
+            }
+            if (!fresh) return void message.warning("价格更新失败，请稍后重试");
+            void message.success("模型和公开价目已更新");
+        } catch (error) {
+            void message.warning(error instanceof Error ? error.message : "模型更新失败");
+        } finally {
+            setRefreshing(false);
+        }
+    }
+
+    async function generate() {
+        if (!allowSubmit || !model || !request || !facts) return;
+        const channel = model.channel;
+        if (!channel) return login({ ...draft, model: model.id });
+        if (draft.images.some((image) => !image.storageKey && !image.dataUrl)) return void message.warning("有参考图已不可用，请重新上传");
+        const snapshot = { ...draft, model: model.id };
+        return submit(async () => {
+            const fresh = model.quoteEligible ? await client.fetchQuery({ queryKey: scaiPricingQueryKey, queryFn: ({ signal }) => fetchScaiPricing(signal), staleTime: 0 }).catch(() => undefined) : undefined;
+            const row = fresh?.models.find((item) => item.model_name === model.name);
+            if (fresh && model.row && !row) {
+                void message.warning("该模型已不在最新价目中，请更新模型后重新选择");
                 return;
             }
-            const nextReferences = await Promise.all(
-                blobs.slice(0, 7 - references.length).map(async (blob, index) => {
-                    const image = await uploadImage(blob);
-                    return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
-                }),
-            );
-            setReferences((value) => [...value, ...nextReferences].slice(0, 7));
-            message.success(t("videoWorkbench.clipboardAdded", { count: nextReferences.length }));
+            const valid = constrainStudioDraft(snapshot, row);
+            if (valid.resolution !== snapshot.resolution || valid.seconds !== snapshot.seconds) {
+                void message.warning("该线路的可选规格已更新，请重新确认参数");
+                return;
+            }
+            const latest = estimateVideoPrice(fresh, row, facts, channel);
+            if (!latest || latest.scope === "public" || latest.signature !== estimate?.signature) {
+                const previous = latest && estimate && latest.signature !== estimate.signature ? formatVideoEstimate(estimate) : undefined;
+                const allowed = await modal.confirm({
+                    title: previous ? "本次估价已更新" : latest?.scope === "account" ? "确认本次估价" : latest ? "确认使用参考价生成" : "暂无法估价",
+                    content: latest ? `${previous ? `${previous} → ` : ""}${formatVideoEstimate(latest)}。实际扣费以 ScAI 账单为准。` : "这个线路或当前参数无法准确估价。继续生成仍可能扣费，实际金额以渠道账单为准。",
+                    okText: "确认生成", cancelText: "返回修改", autoFocusButton: "cancel",
+                });
+                if (!allowed) return;
+            }
+            return { draft: snapshot, config: request, channel, quote: latest ? { amount: latest.amount, currency: latest.currency, scope: latest.scope } : undefined };
+        }, setSelectedId);
+    }
+
+    function useExample(example: typeof examples[number]) {
+        patch({ prompt: example.prompt, ...(example.ratio ? { ratio: example.ratio } : {}) });
+        document.getElementById("studio-prompt")?.focus();
+    }
+
+    async function reuse(job: StudioJob) {
+        if (draft.prompt.trim() && draft.prompt !== job.draft.prompt && !await modal.confirm({ title: "替换当前草稿？", content: "这会将作品的提示词和参数填入编辑区。", okText: "替换草稿", cancelText: "取消" })) return;
+        try {
+            setEdited(await hydrateDraft(job.draft));
+            document.getElementById("studio-prompt")?.focus();
         } catch {
-            message.error(t("videoWorkbench.clipboardEmpty"));
+            void message.error("无法读取作品参数");
         }
-    };
-    const generate = async () => {
-        const agentTaskId = agentTaskIdRef.current;
-        agentTaskIdRef.current = undefined;
-        const snapshot = buildRequestSnapshot();
-        if (!snapshot) {
-            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: t("videoWorkbench.invalidParams") });
-            return;
-        }
-        setElapsedMs(0);
-        setRunning(true);
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
-        setPreviewLog(null);
-        setResults([{ id: nanoid(), status: "pending" }]);
-        const batchStartedAt = performance.now();
-        setStartedAt(batchStartedAt);
-        try {
-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references);
-            const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: 0, status: "pending", task });
-            await saveLog(log, false);
-            void pollGenerationLog(log, snapshot.config, agentTaskId);
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
-            setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
-            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
-            message.error(errorMessage);
-            setRunning(false);
-        }
-    };
+    }
 
-    // Handle video-generation commands from the Agent panel by setting the prompt and optionally starting generation.
-    useEffect(() => {
-        if (!videoCommand || videoCommand.nonce === processedCommandRef.current) return;
-        processedCommandRef.current = videoCommand.nonce;
-        clearVideoCommand();
-        if (typeof videoCommand.prompt === "string") setPrompt(videoCommand.prompt);
-        if (videoCommand.run && running) {
-            if (videoCommand.taskId) updateAgentTask(videoCommand.taskId, { status: "failed", error: t("videoWorkbench.busy") });
-            return;
-        }
-        if (videoCommand.run) {
-            agentTaskIdRef.current = videoCommand.taskId;
-            setAutoRunToken((value) => value + 1);
-        }
-    }, [videoCommand, clearVideoCommand, running, updateAgentTask]);
+    function disconnect() {
+        modal.confirm({ title: "断开 ScAI 账号？", content: "此浏览器会移除本次连接使用的 Key。用同一账号重新连接，即可查看之前保存在本机的作品。", okText: "断开连接", cancelText: "取消", onOk: () => accountChannel && useConfigStore.getState().disconnectScai(accountChannel.id) });
+    }
 
-    useEffect(() => {
-        if (!autoRunToken) return;
-        void generate();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [autoRunToken]);
-
-    const buildRequestSnapshot = () => {
-        const text = prompt.trim();
-        if (!text) {
-            message.error(t("videoWorkbench.promptRequired"));
-            return null;
-        }
-        if (!isAiConfigReady(effectiveConfig, model)) {
-            message.warning(t("workbench.configFirst"));
-            openConfigDialog(true);
-            return null;
-        }
-        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references] };
-    };
-
-    const retryResult = () => {
-        void generate();
-    };
-
-    const downloadVideo = (video: GeneratedVideo) => {
-        saveAs(video.url, "video.mp4");
-    };
-
-    const saveResultToAssets = (video: GeneratedVideo) => {
-        addAsset({
-            kind: "video",
-            title: t("videoWorkbench.resultTitle"),
-            coverUrl: "",
-            tags: [],
-            source: t("videoWorkbench.source"),
-            data: { url: video.url, storageKey: video.storageKey, width: video.width, height: video.height, bytes: video.bytes, mimeType: video.mimeType },
-            metadata: { source: "video-page", prompt },
-        });
-        message.success(t("common.addedToAssets"));
-    };
-
-    const insertPickedAsset = async (payload: InsertAssetPayload) => {
-        if (payload.kind === "text") {
-            setPrompt(payload.content);
-        } else if (payload.kind === "image") {
-            const stored = await uploadImage(payload.dataUrl);
-            setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, 7));
-        }
-        setAssetPickerOpen(false);
-    };
-
-    const createSession = () => {
-        setPrompt("");
-        setReferences([]);
-        setResults([]);
-        setElapsedMs(0);
-        setStartedAt(0);
-        setSelectedLogIds([]);
-        setPreviewLog(null);
-    };
-
-    const deleteSelectedLogs = () => {
-        const mediaKeys = logs
-            .filter((log) => selectedLogIds.includes(log.id))
-            .map((log) => log.video?.storageKey)
-            .filter((key): key is string => Boolean(key));
-        void Promise.all([deleteStoredMedia(mediaKeys), ...selectedLogIds.map((id) => logStore.removeItem(id))]).then(() => refreshLogs());
-        if (previewLog && selectedLogIds.includes(previewLog.id)) {
-            setPreviewLog(null);
-            setResults([]);
-        }
-        setSelectedLogIds([]);
-        setDeleteConfirmOpen(false);
-    };
-
-    const saveLog = async (log: GenerationLog, resumePending = true) => {
-        await logStore.setItem(log.id, serializeLog(log));
-        await refreshLogs(resumePending);
-    };
-
-    const refreshLogs = async (resumePending = true) => {
-        const nextLogs = await readStoredLogs();
-        setLogs(nextLogs);
-        if (resumePending) resumePendingLogs(nextLogs);
-        return nextLogs;
-    };
-
-    const resumePendingLogs = (items: GenerationLog[]) => {
-        for (const log of items) {
-            if (log.status === "pending" && log.task) void pollGenerationLog(log);
-        }
-    };
-
-    const pollGenerationLog = async (log: GenerationLog, configOverride?: AiConfig, agentTaskId?: string) => {
-        if (!log.task || activeLogIdsRef.current.has(log.id)) return;
-        activeLogIdsRef.current.add(log.id);
-        setRunning(true);
-        setStartedAt((value) => value || performance.now());
-        setResults((value) => (value.length ? value : [{ id: log.id, status: "pending" }]));
-        const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
-        try {
-            for (let attempt = 0; attempt < 120; attempt += 1) {
-                const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
-                if (state.status === "completed") {
-                    const stored = await storeGeneratedVideo(state.result);
-                    const nextVideo: GeneratedVideo = {
-                        id: nanoid(),
-                        url: stored.url,
-                        storageKey: stored.storageKey,
-                        durationMs: Date.now() - log.createdAt,
-                        width: stored.width || 1280,
-                        height: stored.height || 720,
-                        bytes: stored.bytes,
-                        mimeType: stored.mimeType,
-                    };
-                    setResults([{ id: nextVideo.id, status: "success", video: nextVideo }]);
-                    if (agentTaskId) updateAgentTask(agentTaskId, { status: "succeeded", successCount: 1, failCount: 0, error: undefined });
-                    await saveLog({ ...log, status: "success", durationMs: nextVideo.durationMs, video: nextVideo, error: undefined });
-                    message.success(t("videoWorkbench.generated"));
-                    return;
-                }
-                if (state.status === "failed") throw new Error(state.error);
-                if (attempt === 119) throw new Error(t("videoWorkbench.timeout"));
-                await delay(2500);
-            }
-        } catch (error) {
-            const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
-            const task = log.task?.provider === "plugin" ? undefined : log.task;
-            setResults([{ id: log.id, status: "failed", error: errorMessage, task }]);
-            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
-            await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage });
-            message.error(errorMessage);
-        } finally {
-            activeLogIdsRef.current.delete(log.id);
-            if (!activeLogIdsRef.current.size) {
-                setRunning(false);
-                setStartedAt(0);
-            }
-        }
-    };
-
-    const queryUpstreamTask = async (logId: string) => {
-        const source = logs.find((item) => item.id === logId) || (await readStoredLog(logId));
-        if (!source?.task || source.task.provider === "plugin") {
-            message.error(t("videoWorkbench.taskUnavailable"));
-            return;
-        }
-        const nextLog = { ...source, status: "pending" as const, error: undefined };
-        await logStore.setItem(nextLog.id, serializeLog(nextLog));
-        await refreshLogs(false);
-        setPreviewLog((current) => (current?.id === nextLog.id ? nextLog : current));
-        setElapsedMs(0);
-        setResults([{ id: nextLog.id, status: "pending", task: nextLog.task }]);
-        void pollGenerationLog(nextLog);
-    };
-
-    const previewGenerationLog = (log: GenerationLog) => {
-        setPreviewLog(log);
-        setLogsOpen(false);
-        setPrompt(log.prompt);
-        setReferences(log.references || []);
-        if (log.config.videoModel || log.model) updateConfig("videoModel", log.config.videoModel || log.model);
-        if (log.config.size) updateConfig("size", log.config.size);
-        if (log.config.vquality) updateConfig("vquality", log.config.vquality);
-        if (log.config.videoSeconds) updateConfig("videoSeconds", log.config.videoSeconds);
-        if (log.config.videoGenerateAudio) updateConfig("videoGenerateAudio", log.config.videoGenerateAudio);
-        if (log.config.videoWatermark) updateConfig("videoWatermark", log.config.videoWatermark);
-        if (log.config.videoMode) updateConfig("videoMode", log.config.videoMode);
-        const task = log.task?.provider === "plugin" ? undefined : log.task;
-        setResults(log.status === "pending" ? [{ id: log.id, status: "pending", task }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed"), task }]);
-    };
+    const renderPrice = (option: StudioModel) => facts && estimateVideoPrice(prices.data, option.row, facts, option.channel);
 
     return (
-        <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
-            <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[300px_minmax(0,1fr)] lg:overflow-hidden xl:grid-cols-[320px_minmax(0,1fr)]">
-                <aside className="thin-scrollbar hidden min-h-0 overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:block">
-                    <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
-                </aside>
-
-                <section className="grid gap-3 lg:min-h-0 lg:overflow-hidden xl:grid-cols-[420px_minmax(0,1fr)]">
-                    <div className="thin-scrollbar flex flex-col rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto">
-                        <div className="flex items-start justify-between gap-3">
-                            <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-100">{t("videoWorkbench.title")}</h1>
-                            <div className="flex shrink-0 gap-2 lg:hidden">
-                                <Button icon={<History className="size-4" />} onClick={() => setLogsOpen(true)}>
-                                    {t("workbench.logs")}
-                                </Button>
-                                <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                    {t("workbench.settings")}
-                                </Button>
-                            </div>
-                        </div>
-
-                        <div className="mt-6 space-y-5">
-                            <div>
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("workbench.prompt")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
-                                            {t("workbench.viewPrompts")}
-                                        </Button>
-                                        <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
-                                            {t("workbench.viewAssets")}
-                                        </Button>
-                                    </div>
-                                </div>
-                                <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={7} placeholder={t("videoWorkbench.promptPlaceholder")} />
-                            </div>
-
-                            <div className="min-w-0">
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <span className="text-base font-semibold">{t("videoWorkbench.references")}</span>
-                                    <div className="flex gap-2">
-                                        <Button size="small" icon={<ClipboardPaste className="size-3.5" />} onClick={() => void addReferencesFromClipboard()}>
-                                            {t("workbench.clipboard")}
-                                        </Button>
-                                        <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                            {t("workbench.upload")}
-                                        </Button>
-                                    </div>
-                                </div>
-                                <div
-                                    className={`hover-scrollbar hover-scrollbar-hint flex min-h-24 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${referenceDragTarget ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                    onDragEnter={handleReferenceDragEnter}
-                                    onDragOver={(event) => {
-                                        event.preventDefault();
-                                        event.dataTransfer.dropEffect = "copy";
-                                    }}
-                                    onDragLeave={handleReferenceDragLeave}
-                                    onDrop={handleReferenceDrop}
-                                >
-                                    {references.map((item, index) => (
-                                        <div key={item.id} className="group relative size-20 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                            <img src={previewUrlFor(item.storageKey) || item.dataUrl} alt={item.name} className="size-full object-cover" />
-                                            <span className="absolute left-1 top-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white">{index + 1}</span>
-                                            <ReferenceOrderButtons index={index} total={references.length} onMove={(offset) => setReferences((value) => moveListItem(value, index, offset))} />
-                                            <button type="button" className="absolute right-1 top-1 hidden size-6 items-center justify-center rounded bg-black/60 text-white group-hover:flex" onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))} aria-label={t("videoWorkbench.removeImage")}>
-                                                <Trash2 className="size-3.5" />
-                                            </button>
-                                        </div>
-                                    ))}
-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
-                                </div>
-                            </div>
-
-                            <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
-                                <span className="truncate text-stone-500 dark:text-stone-400">
-                                    {modelOptionLabel(effectiveConfig, model)} · {videoResolutionLabel(effectiveConfig.vquality)} · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s · {videoModeLabel(effectiveConfig.videoMode)}
-                                </span>
-                                <Button size="small" type="text" icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                    {t("workbench.adjust")}
-                                </Button>
-                            </div>
-
-                            <div className="hidden gap-4 sm:grid sm:grid-cols-2">
-                                <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                            </div>
-                        </div>
-
-                        <div className="mt-auto pt-6">
-                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                                {t("workbench.generate")}
-                            </Button>
-                        </div>
+        <main className="scai-studio" aria-label="ScAI 视频工作室">
+            <div className="studio-inner">
+                <header className="studio-header">
+                    <div className="studio-title"><span className="studio-mark"><Aperture size={23} /></span><h1>ScAI 视频工作室</h1></div>
+                    <div className="studio-header-actions">
+                        <Button type="text" icon={<RefreshCw size={15} />} loading={refreshing} disabled={busy} onClick={() => void refreshCatalog()}>更新模型</Button>
+                        {accountChannel ? <>
+                            <Button className="studio-account" disabled={busy} title="重新登录，更新账号倍率或切换账号" onClick={() => login(draft)}><i />{accountChannel.scai?.name}</Button>
+                            <Tooltip title="断开连接"><Button type="text" aria-label="断开连接" icon={<LogOut size={16} />} onClick={disconnect} disabled={busy} /></Tooltip>
+                        </> : <Button icon={<LogIn size={15} />} onClick={() => login(draft)}>登录 ScAI</Button>}
                     </div>
+                </header>
 
-                    <div className="thin-scrollbar rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800 lg:min-h-0 lg:overflow-y-auto lg:p-5">
-                        <div className="mb-4 flex items-center justify-between gap-3">
-                            <h2 className="text-xl font-semibold">{t("workbench.results")}</h2>
-                            {running ? <Tag className="m-0 px-2 py-1">{t("workbench.waiting", { time: formatDuration(elapsedMs) })}</Tag> : null}
+                <div className="studio-grid">
+                    <section className="studio-editor" aria-label="创建视频">
+                        <div className="studio-section-heading"><span><Clapperboard size={16} /> 创作</span><div className="studio-reference-actions">
+                            {guestDraft && loaded?.draft ? <Button type="link" size="small" onClick={() => { setEdited(guestDraft); setGuestDraft(undefined); }}>使用登录前的草稿</Button> : null}
+                            <Tooltip title="新草稿"><Button type="text" size="small" aria-label="新草稿" icon={<Plus size={17} />} onClick={() => {
+                                const reset = () => setEdited({ ...initialDraft, model: model?.id || "" });
+                                if (draft.prompt.trim() || draft.images.length) modal.confirm({ title: "开始新草稿？", content: "这会清空当前画面描述和参考图。", okText: "清空草稿", cancelText: "取消", onOk: reset });
+                                else reset();
+                            }} /></Tooltip>
+                        </div></div>
+                        <div className="studio-fields">
+                            <div className="studio-field">
+                                <div className="studio-field-heading"><label htmlFor="studio-model">生成模型</label><button type="button" className="studio-text-action" onClick={() => setComparison(true)} disabled={!models.length}>比较价格 <ArrowRight size={13} /></button></div>
+                                <Select id="studio-model" aria-label="生成模型" value={selectionMissing ? undefined : model?.id} showSearch optionFilterProp="label" placeholder={prices.isPending ? "正在读取模型…" : "请选择模型"} options={models.map((entry) => ({ value: entry.id, label: `${studioModelLabel(entry.name)}${!entry.quoteEligible && entry.channel ? ` · ${entry.channel.name}` : ""}` }))} onChange={changeModel} />
+                                {selectionMissing ? <p className="studio-warning">草稿里的模型已不可用，请重新选择。</p> : null}
+                                {accountChannel && !scaiVideo ? <p className="studio-warning">此账号暂无可用视频模型。</p> : null}
+                                {prices.isError && !prices.data ? <p className="studio-warning">公开价目暂不可用。</p> : null}
+                            </div>
+                            <div className="studio-field">
+                                <div className="studio-field-heading"><label htmlFor="studio-prompt">画面描述</label><Tooltip title="提示词库"><Button type="text" size="small" aria-label="提示词库" icon={<BookOpen size={15} />} onClick={() => setPromptsOpen(true)} /></Tooltip></div>
+                                <Input.TextArea id="studio-prompt" value={draft.prompt} onChange={(event) => patch({ prompt: event.target.value })} rows={4} placeholder="例如：镜头缓缓靠近雨中的车窗，玻璃倒映着霓虹灯…" />
+                            </div>
+                            <div className="studio-field">
+                                <div className="studio-field-heading"><span>参考图 <small>可选</small></span><div className="studio-reference-actions">
+                                    <Tooltip title="从剪贴板粘贴"><Button type="text" size="small" aria-label="从剪贴板粘贴" icon={<ClipboardPaste size={15} />} onClick={() => void pasteImages()} /></Tooltip>
+                                    <Tooltip title="从我的资产选择"><Button type="text" size="small" aria-label="从我的资产选择" icon={<Images size={15} />} onClick={() => setAssetsOpen(true)} /></Tooltip>
+                                </div></div>
+                                <div className="studio-references" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}>
+                                    {draft.images.map((image, index) => <div className="studio-reference" key={image.id}>
+                                        {image.dataUrl ? <img src={image.dataUrl} alt={image.name} /> : <Images size={17} />}
+                                        <button type="button" aria-label={`移除参考图 ${index + 1}`} onClick={() => patch({ images: draft.images.filter((ref) => ref.id !== image.id) })}><X size={12} /></button>
+                                        {index > 0 ? <button type="button" className="studio-reference-order" aria-label={`将参考图 ${index + 1} 前移`} onClick={() => {
+                                            const images = [...draft.images];
+                                            [images[index - 1], images[index]] = [images[index], images[index - 1]];
+                                            patch({ images });
+                                        }}>{index + 1}</button> : null}
+                                    </div>)}
+                                    {draft.images.length < referenceLimit ? <button type="button" className="studio-upload" onClick={() => fileInput.current?.click()}><Upload size={16} />{draft.images.length ? "添加" : "上传图片"}</button> : null}
+                                    <input hidden ref={fileInput} type="file" accept="image/*" multiple onChange={(event) => { void addFiles(event.target.files); event.target.value = ""; }} />
+                                </div>
+                            </div>
+                            <div className="studio-parameters">
+                                <div className="studio-field"><label htmlFor="studio-resolution">清晰度</label><Select id="studio-resolution" value={draft.resolution} options={resolutionOptions.map((value) => ({ value, label: videoResolutionLabel(value) }))} onChange={(resolution: string) => patch({ resolution })} /></div>
+                                <div className="studio-field"><label htmlFor="studio-seconds">时长</label><Select id="studio-seconds" value={draft.seconds} options={Array.from({ length: caps.max - caps.min + 1 }, (_, index) => ({ value: String(caps.min + index), label: `${caps.min + index} 秒` }))} onChange={(seconds: string) => patch({ seconds })} /></div>
+                                <div className="studio-field"><label htmlFor="studio-ratio">比例</label><Select id="studio-ratio" value={draft.ratio} options={videoRatioOptions.map(({ value }) => ({ value, label: value === "auto" ? "自动" : value }))} onChange={(ratio: string) => patch({ ratio })} /></div>
+                            </div>
+                            <button type="button" className="studio-advanced-toggle" onClick={() => setAdvanced(!advanced)} aria-expanded={advanced}><SlidersHorizontal size={15} /> 更多设置 <ChevronDown size={14} className={advanced ? "studio-flipped" : ""} /></button>
+                            {advanced ? <div className="studio-advanced">
+                                {draft.images.length > 0 ? <label>图片模式 <Select aria-label="图片模式" disabled={draft.images.length > 2} value={draft.images.length > 2 ? "reference" : draft.mode} options={[{ value: "frames", label: "首尾帧" }, { value: "reference", label: "全能参考" }]} onChange={(mode: StudioDraft["mode"]) => patch({ mode })} /></label> : null}
+                                {!caps.resolutions.length ? <label>自定义清晰度 <Input aria-label="自定义清晰度" placeholder="例如 960p" defaultValue={draft.resolution} key={model?.id} onBlur={(event) => patch({ resolution: parseVideoResolution(event.target.value) })} onPressEnter={(event) => event.currentTarget.blur()} /></label> : null}
+                                <label>生成声音 <Switch size="small" checked={draft.audio} onChange={(audio) => patch({ audio })} /></label>
+                                <label>添加水印 <Switch size="small" checked={draft.watermark} onChange={(watermark) => patch({ watermark })} /></label>
+                            </div> : null}
                         </div>
-                        {results.length ? (
-                            <div className="grid gap-4">
-                                {results.map((result) => (result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} onQuery={result.task ? () => void queryUpstreamTask(result.id) : undefined} queryLoading={running} /> : <PendingVideoCard key={result.id} />))}
+                        <div className="studio-submit">
+                            <div className="studio-quote" aria-live="polite">
+                                <span>{estimate?.scope === "account" ? "账号预估" : estimate ? "公开参考价" : "本次费用"}</span>
+                                <strong>{estimate ? formatVideoEstimate(estimate) : prices.isPending ? "读取中" : "暂无法估价"}</strong>
                             </div>
-                        ) : (
-                            <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
-                                <VideoIcon className="mb-4 size-11 text-stone-400" />
-                                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t("videoWorkbench.empty")} />
-                            </div>
-                        )}
-                    </div>
-                </section>
-            </main>
-            <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                    void addReferences(event.target.files);
-                    event.target.value = "";
-                }}
-            />
-            <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
-                <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
-            </Drawer>
-            <Drawer title={t("workbench.settings")} placement="bottom" height="82vh" open={settingsOpen} onClose={() => setSettingsOpen(false)}>
-                <div className="grid grid-cols-2 gap-3 pb-4">
-                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                            <button type="button" className="studio-generate" disabled={model?.channel ? !allowSubmit : busy} onClick={() => model?.channel ? void generate() : login({ ...draft, model: model?.id || draft.model })}>{busy ? "处理中…" : model?.channel ? <><Film size={17} />生成视频</> : <><LogIn size={17} />登录后生成</>}</button>
+                            {model?.channel?.scai && estimate?.scope === "account" ? <span className="studio-quote-note" title={`账号价格更新于 ${new Date(model.channel.scai.pricedAt).toLocaleString("zh-CN")}`}>按上次登录的账号倍率估算 · 以账单为准</span> : null}
+                            {loaded?.failed ? <span className="studio-warning">浏览器存储不可用，无法保存任务。</span> : null}
+                        </div>
+                    </section>
+
+                    <StudioPreview job={selected} busy={busy} activeId={activeId} site={site} pricing={prices.data} accountChannel={accountChannel} onQuery={(job) => void query(job)} onReuse={(job) => void reuse(job)} onExample={useExample} examples={examples} />
                 </div>
-            </Drawer>
-            <PromptSelectDialog open={promptDialogOpen} onOpenChange={setPromptDialogOpen} onSelect={setPrompt} />
-            <AssetPickerModal open={assetPickerOpen} defaultTab="my-assets" onInsert={(payload) => void insertPickedAsset(payload)} onClose={() => setAssetPickerOpen(false)} />
-            <Modal title={t("workbench.deleteLogs")} open={deleteConfirmOpen} onCancel={() => setDeleteConfirmOpen(false)} onOk={deleteSelectedLogs} okText={t("common.delete")} okButtonProps={{ danger: true }} cancelText={t("common.cancel")}>
-                {t("workbench.deleteLogsConfirm", { count: selectedLogIds.length })}
+
+                <StudioWorks jobs={loaded?.jobs || []} selected={selected?.id} activeId={activeId} onSelect={setSelectedId} onDelete={(job) => modal.confirm({ title: "删除这条本机记录？", okText: "删除", okButtonProps: { danger: true }, cancelText: "取消", onOk: () => discard(job) })} />
+            </div>
+
+            <Modal title="比较本次费用" open={comparison} onCancel={() => setComparison(false)} footer={null} width={560}>
+                <p className="mb-3 text-sm text-muted-foreground">{videoResolutionLabel(draft.resolution)} · {draft.seconds} 秒 · {draft.images.length} 张参考图</p>
+                <div className="studio-compare-list">
+                    {models.map((option) => ({ option, value: renderPrice(option) })).sort((a, b) => (a.value?.amount ?? Infinity) - (b.value?.amount ?? Infinity)).map(({ option, value }) => (
+                        <button type="button" key={option.id} title={option.name} onClick={() => { changeModel(option.id); setComparison(false); }}>
+                            <span>{studioModelLabel(option.name)} <small>{option.channel?.name}</small></span><span><b>{value ? formatVideoEstimate(value) : "暂无同规格估价"}</b><small>{value?.scope === "account" ? "账号预估" : value ? "公开参考价" : ""}</small></span>
+                        </button>
+                    ))}
+                </div>
             </Modal>
-        </div>
+            {promptsOpen ? <PromptSelectDialog open onOpenChange={setPromptsOpen} onSelect={(prompt) => patch({ prompt })} /> : null}
+            {assetsOpen ? <AssetPickerModal open defaultTab="my-assets" onInsert={(asset) => void useAsset(asset)} onClose={() => setAssetsOpen(false)} /> : null}
+        </main>
     );
-}
-
-function GenerationSettings({ config, model, updateConfig, openConfigDialog }: { config: AiConfig; model: string; updateConfig: UpdateAiConfig; openConfigDialog: (shouldPromptContinue?: boolean) => void }) {
-    const theme = canvasThemes[useThemeStore((state) => state.theme)];
-    const { t } = useTranslation();
-
-    return (
-        <>
-            <label className="col-span-2 block min-w-0 sm:col-span-1">
-                <span className="mb-1.5 block text-sm font-semibold sm:mb-2 sm:text-base">{t("workbench.model")}</span>
-                <ModelPicker config={config} value={model} onChange={(value) => updateConfig("videoModel", value)} capability="video" fullWidth onMissingConfig={() => openConfigDialog(false)} />
-            </label>
-            <div className="col-span-2">
-                <VideoSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" />
-            </div>
-        </>
-    );
-}
-
-function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedVideo; onDownload: (video: GeneratedVideo) => void; onSaveAsset: (video: GeneratedVideo) => void }) {
-    const { t } = useTranslation();
-    return (
-        <div className="overflow-hidden rounded-lg border border-stone-200 bg-background dark:border-stone-800">
-            <video src={video.url} controls className="aspect-video w-full bg-black object-contain" />
-            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-stone-200 px-3 py-2.5 dark:border-stone-800">
-                <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-xs text-stone-500 dark:text-stone-400">
-                    <span>
-                        {video.width}x{video.height}
-                    </span>
-                    <span>{formatBytes(video.bytes)}</span>
-                    <span>{formatDuration(video.durationMs)}</span>
-                </div>
-                <div className="flex shrink-0 gap-1">
-                    <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => onSaveAsset(video)}>
-                        {t("common.addToAssets")}
-                    </Button>
-                    <Button size="small" icon={<Download className="size-3.5" />} onClick={() => onDownload(video)}>
-                        {t("common.download")}
-                    </Button>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-function PendingVideoCard() {
-    const { t } = useTranslation();
-    return (
-        <div className="relative aspect-video overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
-                <LoaderCircle className="size-6 animate-spin" />
-                <span>{t("workbench.generating")}</span>
-            </div>
-        </div>
-    );
-}
-
-function FailedVideoCard({ error, onRetry, onQuery, queryLoading }: { error: string; onRetry: () => void; onQuery?: () => void; queryLoading?: boolean }) {
-    const { t } = useTranslation();
-    return (
-        <div className="overflow-hidden rounded-lg border border-red-200 bg-red-50 dark:border-red-950 dark:bg-red-950/20">
-            <div className="flex aspect-video flex-col items-center justify-center gap-3 p-5 text-center">
-                <div className="text-sm font-medium text-red-600 dark:text-red-300">{t("workbench.failed")}</div>
-                <Typography.Paragraph ellipsis={{ rows: 4 }} className="!mb-0 !text-xs !text-red-500 dark:!text-red-300">
-                    {error}
-                </Typography.Paragraph>
-            </div>
-            <div className="flex justify-end gap-2 border-t border-red-200 p-3 dark:border-red-950">
-                {onQuery ? (
-                    <Button size="small" icon={<RefreshCw className="size-3.5" />} loading={queryLoading} disabled={queryLoading} onClick={onQuery}>
-                        {t("videoWorkbench.queryUpstream")}
-                    </Button>
-                ) : null}
-                <Button size="small" danger onClick={onRetry}>
-                    {t("videoWorkbench.regenerate")}
-                </Button>
-            </div>
-        </div>
-    );
-}
-
-function LogPanel({
-    logs,
-    selectedLogIds,
-    activeLogId,
-    onSelectedLogIdsChange,
-    onCreateSession,
-    onDeleteSelected,
-    onPreviewLog,
-}: {
-    logs: GenerationLog[];
-    selectedLogIds: string[];
-    activeLogId?: string;
-    onSelectedLogIdsChange: (ids: string[]) => void;
-    onCreateSession: () => void;
-    onDeleteSelected: () => void;
-    onPreviewLog: (log: GenerationLog) => void;
-}) {
-    const { t } = useTranslation();
-    const allSelected = Boolean(logs.length) && selectedLogIds.length === logs.length;
-    const toggleAll = () => onSelectedLogIdsChange(allSelected ? [] : logs.map((log) => log.id));
-
-    return (
-        <>
-            <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-base font-semibold">{t("workbench.logs")}</h2>
-                <Tag className="m-0">{logs.length}</Tag>
-            </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-                <Button size="small" icon={<Plus className="size-3.5" />} onClick={onCreateSession}>
-                    {t("workbench.new")}
-                </Button>
-                <Button size="small" icon={<CheckSquare className="size-3.5" />} disabled={!logs.length} onClick={toggleAll}>
-                    {allSelected ? t("common.cancel") : t("workbench.selectAll")}
-                </Button>
-                <Button size="small" danger icon={<Trash2 className="size-3.5" />} disabled={!selectedLogIds.length} onClick={onDeleteSelected}>
-                    {t("common.delete")}
-                </Button>
-            </div>
-            <div className="space-y-3">
-                {logs.map((log) => (
-                    <LogCard key={log.id} log={log} selected={selectedLogIds.includes(log.id)} active={activeLogId === log.id} onSelectedChange={(checked) => onSelectedLogIdsChange(checked ? [...selectedLogIds, log.id] : selectedLogIds.filter((id) => id !== log.id))} onClick={() => onPreviewLog(log)} />
-                ))}
-                {!logs.length ? <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed border-stone-300 text-center text-sm text-stone-500 dark:border-stone-700">{t("workbench.noLogs")}</div> : null}
-            </div>
-        </>
-    );
-}
-
-function LogCard({ log, selected, active, onSelectedChange, onClick }: { log: GenerationLog; selected: boolean; active: boolean; onSelectedChange: (checked: boolean) => void; onClick: () => void }) {
-    const { t } = useTranslation();
-    return (
-        <button type="button" className={`block w-full rounded-lg border p-2 text-left transition ${active ? "border-stone-900 bg-blue-50 dark:border-stone-100 dark:bg-blue-950/20" : "border-stone-200 bg-background hover:bg-stone-50 dark:border-stone-800 dark:hover:bg-stone-900"}`} onClick={onClick}>
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
-                <Checkbox className="mt-0.5" checked={selected} onClick={(event) => event.stopPropagation()} onChange={(event) => onSelectedChange(event.target.checked)} />
-                <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold leading-5">{log.title}</div>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.size}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{videoResolutionLabel(log.resolution)}</Tag>
-                        <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none">{log.seconds}s</Tag>
-                    </div>
-                </div>
-                <div className="grid justify-items-end gap-2">
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color={log.status === "success" ? "blue" : log.status === "pending" ? "processing" : "red"}>
-                        {t(`workbench.${log.status === "success" ? "success" : log.status === "pending" ? "generating" : "failed"}`)}
-                    </Tag>
-                    <Tag className="m-0 flex h-6 items-center rounded-md px-1.5 text-xs leading-none" color="green">
-                        {formatDuration(log.durationMs)}
-                    </Tag>
-                </div>
-            </div>
-        </button>
-    );
-}
-
-async function readStoredLogs() {
-    if (typeof window === "undefined") return [];
-    try {
-        const logs: GenerationLog[] = [];
-        await logStore.iterate<GenerationLog, void>((value) => {
-            logs.push(value);
-        });
-        return (await Promise.all(logs.map(normalizeLog))).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-    } catch {
-        return [];
-    }
-}
-
-async function readStoredLog(id: string) {
-    try {
-        const stored = await logStore.getItem<GenerationLog>(id);
-        return stored ? normalizeLog(stored) : null;
-    } catch {
-        return null;
-    }
-}
-
-async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog> {
-    const video = log.video?.storageKey ? { ...log.video, url: await resolveMediaUrl(log.video.storageKey, log.video.url) } : log.video;
-    const references = await Promise.all(
-        (log.references || []).map(async (item) => {
-            void ensureImagePreview(item.storageKey);
-            return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
-        }),
-    );
-    const config = normalizeLogConfig(log);
-    return {
-        id: log.id || nanoid(),
-        createdAt: log.createdAt || Date.now(),
-        title: log.title || log.model || i18n.t("workbench.untitled"),
-        prompt: log.prompt || "",
-        time: log.time || new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
-        model: log.model || config.videoModel || "",
-        config,
-        references,
-        durationMs: log.durationMs || 0,
-        size: log.size || config.size || "",
-        resolution: normalizeResolution(log.resolution || config.vquality || ""),
-        seconds: log.seconds || config.videoSeconds || "",
-        status: log.status || "success",
-        task: log.task,
-        video,
-        error: log.error,
-    };
-}
-
-function serializeLog(log: GenerationLog): GenerationLog {
-    return {
-        ...log,
-        references: log.references.map((item) => ({ ...item, dataUrl: item.storageKey ? "" : item.dataUrl })),
-        video: log.video?.storageKey ? { ...log.video, url: "" } : log.video,
-    };
-}
-
-function moveListItem<T>(items: T[], index: number, offset: number) {
-    const targetIndex = index + offset;
-    if (targetIndex < 0 || targetIndex >= items.length) return items;
-    const next = [...items];
-    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
-    return next;
-}
-
-function ReferenceOrderButtons({ index, total, onMove }: { index: number; total: number; onMove: (offset: number) => void }) {
-    if (total <= 1) return null;
-    return (
-        <div className="absolute inset-x-1 bottom-1 flex justify-between">
-            <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !bg-white/85 !p-0 !shadow-sm" icon={<ArrowLeft className="size-3" />} disabled={index <= 0} onClick={() => onMove(-1)} />
-            <Button size="small" className="!h-6 !w-6 !min-w-6 !rounded-full !bg-white/85 !p-0 !shadow-sm" icon={<ArrowRight className="size-3" />} disabled={index >= total - 1} onClick={() => onMove(1)} />
-        </div>
-    );
-}
-
-function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
-    return {
-        model: log.config?.model || log.model || "",
-        videoModel: log.config?.videoModel || log.model || "",
-        size: log.config?.size || log.size || "",
-        vquality: normalizeResolution(log.config?.vquality || log.resolution || ""),
-        videoSeconds: log.config?.videoSeconds || log.seconds || "",
-        videoGenerateAudio: log.config?.videoGenerateAudio || "true",
-        videoWatermark: log.config?.videoWatermark || "false",
-        videoMode: log.config?.videoMode === "reference" ? "reference" : "frames",
-    };
-}
-
-function buildLog({ prompt, model, config, references, durationMs, status, task, video, error }: { prompt: string; model: string; config: AiConfig; references: ReferenceImage[]; durationMs: number; status: GenerationLog["status"]; task?: VideoGenerationTask; video?: GeneratedVideo; error?: string }): GenerationLog {
-    const logConfig = {
-        model: config.model,
-        videoModel: config.videoModel,
-        size: config.size,
-        vquality: normalizeResolution(config.vquality),
-        videoSeconds: config.videoSeconds,
-        videoGenerateAudio: config.videoGenerateAudio,
-        videoWatermark: config.videoWatermark,
-        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-    };
-    return {
-        id: nanoid(),
-        createdAt: Date.now(),
-        title: prompt.slice(0, 12) || i18n.t("workbench.untitled"),
-        prompt,
-        time: new Date().toLocaleString(i18n.resolvedLanguage, { hour12: false }),
-        model,
-        config: logConfig,
-        references,
-        durationMs,
-        size: logConfig.size,
-        resolution: logConfig.vquality,
-        seconds: logConfig.videoSeconds,
-        status,
-        task,
-        video,
-        error,
-    };
-}
-
-function buildVideoConfig(config: AiConfig, model: string): AiConfig {
-    return {
-        ...config,
-        model,
-        videoModel: model,
-        size: normalizeVideoSize(config.size, config.vquality),
-        videoSeconds: normalizeVideoSeconds(config.videoSeconds),
-        vquality: normalizeResolution(config.vquality),
-        videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
-        videoWatermark: String(boolConfig(config.videoWatermark, false)),
-        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-    };
-}
-
-function normalizeVideoSeconds(value: string) {
-    if (String(value).trim() === "-1") return "-1";
-    return clampVideoSeconds(value);
-}
-
-function normalizeVideoSize(value: string, resolution = "720") {
-    return normalizeVideoSizeValue(value, resolution);
-}
-
-function normalizeResolution(value: string) {
-    return normalizeVideoResolutionValue(value);
-}
-
-function delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

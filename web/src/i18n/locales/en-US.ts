@@ -385,6 +385,7 @@ export default {
         verificationFailed: "Second factor verification failed",
         setupFailed: "Automatic setup failed. Check your token access and image/video group settings.",
         noModels: "The account signed in, but no models are available.",
+        noVideoModels: "This ScAI account has no video models.",
         success: "ScAI connected and models configured",
     },
     version: {

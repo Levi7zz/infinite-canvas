@@ -29,6 +29,10 @@ type GeminiVideoOperation = {
 };
 export type VideoGenerationTaskState = { status: "pending" } | { status: "completed"; result: VideoGenerationResult } | { status: "failed"; error: string };
 
+export function videoRequestPriceFacts(config: AiConfig, imageCount: number) {
+    return { resolution: normalizeVideoResolution(config.vquality).toLowerCase(), seconds: Number(normalizeVideoSeconds(config.videoSeconds)), input_images: imageCount };
+}
+
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
 
@@ -135,7 +139,14 @@ function videoPluginResult(result: unknown): VideoGenerationResult {
 }
 
 export async function storeGeneratedVideo(result: VideoGenerationResult): Promise<UploadedFile> {
-    if (result.blob) return uploadMediaFile(result.blob, "video");
+    if (result.blob) {
+        await assertVideoBlob(result.blob);
+        try {
+            return await uploadMediaFile(result.blob, "video");
+        } catch {
+            return { url: URL.createObjectURL(result.blob), storageKey: "", bytes: result.blob.size, mimeType: result.blob.type || "video/mp4" };
+        }
+    }
     if (result.url) {
         try {
             return await uploadMediaFile(result.url, "video");
@@ -151,12 +162,13 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
     const mode = resolveVideoMode(config.videoMode, images.length);
+    const facts = videoRequestPriceFacts(config, images.length);
     const ratio = inferVideoRatio(config.size || "16:9");
     const body = new FormData();
     body.append("model", modelOptionName(model));
     body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    body.append("size", normalizeVideoSize(config.size, config.vquality) || "1280x720");
+    body.append("seconds", String(facts.seconds));
+    body.append("size", normalizeVideoSize(config.size, config.vquality) || computeVideoSize(config.vquality, "16:9"));
     if (ratio && ratio !== "auto") {
         body.append("ratio", ratio);
     }
@@ -192,15 +204,16 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
 
 async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
-        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
+        const taskId = encodeURIComponent(task.id);
+        const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${taskId}`), { headers: aiHeaders(config), signal: options?.signal })).data);
+        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
         const url = videoResultUrl(video);
         if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
-        if (video.status === "completed") {
-            const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
+        if (video.status === "completed" || video.status === "succeeded") {
+            const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${taskId}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
             await assertVideoBlob(content.data);
             return { status: "completed", result: { blob: content.data } };
         }
-        if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
         return { status: "pending" };
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
@@ -408,15 +421,17 @@ function statusMessage(status: number | undefined, fallback: string) {
 }
 
 async function assertVideoBlob(blob: Blob) {
+    if (!blob.size || /^text\//i.test(blob.type)) throw new Error(apiText("videoDownloadFailed"));
     if (!blob.type.includes("json")) return;
     let payload: { code?: number; msg?: string; error?: { message?: string } };
     try {
         payload = JSON.parse(await blob.text()) as { code?: number; msg?: string; error?: { message?: string } };
     } catch {
-        return;
+        throw new Error(apiText("videoDownloadFailed"));
     }
     if (typeof payload.code === "number" && payload.code !== 0) throw new Error(readApiErrorMessage(payload) || apiText("videoDownloadFailed"));
     if (payload.error?.message) throw new Error(readApiErrorMessage(payload.error.message) || payload.error.message);
+    throw new Error(apiText("videoDownloadFailed"));
 }
 
 function isPublicMediaUrl(value: string) {

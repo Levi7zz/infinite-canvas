@@ -2,11 +2,13 @@ import { App, Alert, Button, Form, Input, Modal, Select } from "antd";
 import { KeyRound, LogIn, ShieldCheck, WandSparkles } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useLocation } from "react-router-dom";
 
 import { fetchChannelModelDefinitions } from "@/services/api/image";
 import { loginNewApi, logoutNewApi, PasskeyVerificationCancelled, provisionCanvasKey, verifyNewApiLogin, verifyNewApiPasskey, type NewApiVerificationMethod } from "@/services/new-api-auth";
 import { NEW_API_BASE_URL } from "@/constant/runtime-config";
-import { useConfigStore } from "@/stores/use-config-store";
+import { createModelChannel, useConfigStore } from "@/stores/use-config-store";
+import { applyScaiModelCapabilities, fetchScaiPricing } from "@/services/api/scai-pricing";
 
 type Credentials = { username: string; password: string };
 type VerificationMode = "2fa" | "passkey";
@@ -18,8 +20,8 @@ function readableError(reason: unknown, fallback: string) {
 export function NewApiLoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
     const { message } = App.useApp();
     const { t } = useTranslation();
-    const importChannelCredentials = useConfigStore((state) => state.importChannelCredentials);
-    const applyChannelModels = useConfigStore((state) => state.applyChannelModels);
+    const requireVideo = useLocation().pathname === "/video";
+    const connectScai = useConfigStore((state) => state.connectScai);
     const [form] = Form.useForm<Credentials & { code: string }>();
     const [loading, setLoading] = useState(false);
     const [flowToken, setFlowToken] = useState("");
@@ -47,14 +49,15 @@ export function NewApiLoginModal({ open, onClose }: { open: boolean; onClose: ()
 
     const configureCanvas = async (accessToken: string, sessionId: string) => {
         try {
-            const apiKey = await provisionCanvasKey(accessToken);
-            const result = importChannelCredentials({ baseUrl: NEW_API_BASE_URL, apiKey });
-            if (!result.channelId) throw new Error(t("canvasAuth.setupFailed"));
-            const channel = useConfigStore.getState().config.channels.find((item) => item.id === result.channelId);
-            if (!channel) throw new Error(t("canvasAuth.setupFailed"));
-            const models = await fetchChannelModelDefinitions(channel);
+            const { apiKey, account } = await provisionCanvasKey(accessToken, requireVideo);
+            const [definitions, pricing] = await Promise.all([
+                fetchChannelModelDefinitions(createModelChannel({ baseUrl: NEW_API_BASE_URL, apiKey, apiFormat: "openai" })),
+                fetchScaiPricing().catch(() => undefined),
+            ]);
+            const models = applyScaiModelCapabilities(definitions, pricing, account.autoGroups);
             if (!models.length) throw new Error(t("canvasAuth.noModels"));
-            applyChannelModels(result.channelId, models);
+            if (requireVideo && !models.some((model) => model.capability === "video")) throw new Error(t("canvasAuth.noVideoModels"));
+            connectScai(NEW_API_BASE_URL, apiKey, account, models);
             message.success(t("canvasAuth.success"));
             finish();
         } catch (reason) {
@@ -138,7 +141,7 @@ export function NewApiLoginModal({ open, onClose }: { open: boolean; onClose: ()
             open={open}
             centered
             width={460}
-            onCancel={finish}
+            onCancel={loading ? undefined : finish}
             destroyOnHidden
             footer={null}
             title={
@@ -205,7 +208,7 @@ export function NewApiLoginModal({ open, onClose }: { open: boolean; onClose: ()
                         </>
                     )}
                     <div className="flex items-center justify-end gap-2">
-                        <Button onClick={finish}>{t("common.cancel")}</Button>
+                        <Button onClick={finish} disabled={loading}>{t("common.cancel")}</Button>
                         <Button type="primary" htmlType={flowToken && verificationMode === "passkey" ? "button" : "submit"} onClick={flowToken && verificationMode === "passkey" ? () => void submitPasskey() : undefined} loading={loading} icon={<LogIn className="size-4" />}>
                             {t(flowToken ? (verificationMode === "passkey" ? "canvasAuth.passkeyLogin" : "canvasAuth.verify") : "canvasAuth.login")}
                         </Button>

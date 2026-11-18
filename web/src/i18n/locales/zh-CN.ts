@@ -329,7 +329,7 @@ export default {
     navigation: {
         canvas: "我的画布",
         image: "生图工作台",
-        video: "视频创作台",
+        video: "视频工作室",
         prompts: "提示词库",
         assets: "我的资产",
         config: "配置",
@@ -385,6 +385,7 @@ export default {
         verificationFailed: "二次验证失败",
         setupFailed: "自动配置失败，请检查账号的令牌权限以及生图和视频分组设置",
         noModels: "账号已登录，但没有可用模型",
+        noVideoModels: "这个 ScAI 账号没有可用的视频模型",
         success: "ScAI 已连接，模型已配置",
     },
     version: {

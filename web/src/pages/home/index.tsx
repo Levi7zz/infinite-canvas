@@ -1,4 +1,4 @@
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, Clapperboard } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { App, Button, Image, Tag } from "antd";
 import { useNavigate } from "react-router-dom";
@@ -54,6 +54,9 @@ export default function IndexPage() {
                         </Button>
                         <Button size="large" onClick={() => navigate("/canvas")}>
                             {t("home.openCanvas")}
+                        </Button>
+                        <Button size="large" icon={<Clapperboard className="size-4" />} onClick={() => navigate("/video")}>
+                            {t("navigation.video")}
                         </Button>
                     </div>
                 </div>

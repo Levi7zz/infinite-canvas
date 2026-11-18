@@ -248,8 +248,8 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
     const run = input.run !== false;
     navigate("/video");
-    const taskId = useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run });
-    return { ok: true, navigated: "/video", prompt, run, taskId, applied, note: siteText(run ? "videoGenerationStarted" : "videoConfigApplied") };
+    useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run: false });
+    return { ok: true, navigated: "/video", prompt, run: false, requiresConfirmation: run, applied, note: siteText("videoConfigApplied") };
 }
 
 async function searchPrompts(input: SiteToolInput) {

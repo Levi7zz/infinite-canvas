@@ -16,6 +16,8 @@ export type ChannelModel = {
     script?: string;
 };
 
+export type ScaiAccount = { id: number; name: string; autoGroups: string[]; groupRatios: Record<string, number>; pricedAt: number };
+
 export type ModelChannel = {
     id: string;
     name: string;
@@ -23,6 +25,7 @@ export type ModelChannel = {
     apiKey: string;
     apiFormat: ApiCallFormat;
     models: ChannelModel[];
+    scai?: ScaiAccount;
 };
 
 export type AiConfig = {
@@ -132,6 +135,8 @@ type ConfigStore = {
     shouldPromptContinue: boolean;
     updateConfig: <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
     importChannelCredentials: (input: { baseUrl?: string | null; apiKey?: string | null }) => ChannelCredentialsImportResult;
+    connectScai: (baseUrl: string, apiKey: string, account: ScaiAccount, models: ChannelModel[]) => void;
+    disconnectScai: (channelId: string) => void;
     applyChannelModels: (channelId: string, models: ChannelModel[]) => void;
     refreshChannelModels: (channelId: string, models: ChannelModel[]) => void;
     updateWebdavConfig: <K extends keyof WebdavSyncConfig>(key: K, value: WebdavSyncConfig[K]) => void;
@@ -227,6 +232,24 @@ export const useConfigStore = create<ConfigStore>()(
                 if (result.config !== currentConfig) set({ config: result.config });
                 return { status: result.status, channelName: result.channelName, channelId: result.channelId };
             },
+            connectScai: (baseUrl, apiKey, scai, models) => set(({ config }) => {
+                const result = upsertChannelCredentials(config, { baseUrl, apiKey });
+                if (!result.channelId) return { config };
+                const linked = applyChannelModels(result.config, result.channelId, models);
+                return { config: { ...linked, channels: linked.channels.map((channel) => channel.id === result.channelId ? { ...channel, name: "ScAI", scai } : channel) } };
+            }),
+            disconnectScai: (channelId) => set(({ config }) => {
+                const channels = config.channels.filter((channel) => channel.id !== channelId);
+                return { config: {
+                    ...config, channels, models: modelOptionsFromChannels(channels),
+                    baseUrl: channels[0]?.baseUrl || "", apiKey: channels[0]?.apiKey || "", apiFormat: channels[0]?.apiFormat || "openai",
+                    model: normalizeModelOptionValue(config.model, channels),
+                    imageModel: normalizeModelOptionValue(config.imageModel, channels),
+                    videoModel: normalizeModelOptionValue(config.videoModel, channels),
+                    textModel: normalizeModelOptionValue(config.textModel, channels),
+                    audioModel: normalizeModelOptionValue(config.audioModel, channels),
+                } };
+            }),
             applyChannelModels: (channelId, models) => set((state) => ({ config: applyChannelModels(state.config, channelId, models) })),
             refreshChannelModels: (channelId, models) => set((state) => ({ config: refreshChannelModels(state.config, channelId, models) })),
             updateWebdavConfig: (key, value) =>
@@ -319,6 +342,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
         apiKey: channel?.apiKey || "",
         apiFormat,
         models: normalizeChannelModels(channel?.models),
+        scai: channel?.apiKey ? channel.scai : undefined,
     };
 }
 
@@ -340,7 +364,7 @@ export function upsertChannelCredentials(
         if (existing.baseUrl === baseUrl && existing.name === channelName && (!apiKey || existing.apiKey === apiKey)) {
             return { status: "updated", channelName, channelId: existing.id, config };
         }
-        const updated = { ...existing, name: channelName, baseUrl, ...(apiKey ? { apiKey } : {}) };
+        const updated = { ...existing, name: channelName, baseUrl, ...(apiKey && apiKey !== existing.apiKey ? { apiKey, scai: undefined } : {}) };
         const channels = config.channels.map((channel, index) => (index === matchingIndex ? updated : channel));
         return { status: "updated", channelName, channelId: existing.id, config: { ...config, channels } };
     }

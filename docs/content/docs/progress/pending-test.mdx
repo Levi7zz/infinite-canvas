@@ -16,7 +16,10 @@ The current release needs manual verification in these areas:
 - New API Auto Key import: open the canvas with `#import=1&apiKey=...&baseUrl=...` and confirm the fragment disappears from the address bar, the provider is created, `/v1/models` is fetched with the same key, image/video/text/audio models are assigned automatically, and a failed model request keeps the imported key while showing an error. Query-string imports should remain compatible, repeated imports should update the same provider, and analytics requests plus the Referer header must not contain the key.
 - Configuration export: export settings and confirm channel API keys are empty in the JSON while importing the redacted file still works.
 
-- Video Studio long-running tasks: let a video task exceed the normal wait window, confirm the task is kept in generation history, the result card offers **Query upstream status**, and a later completed task is downloaded without creating a second task. **Generate again** should remain available as a separate action. Test 2K and 4K presets plus a custom resolution and confirm the selected value and computed dimensions are sent to the provider.
+- ScAI 视频工作室：直接打开 `/video` 可读公开参考价、套用示例并保留草稿。用无二次验证、Passkey 和 TOTP 的账号分别连接；只开视频权限的账号可配置，切换账号不会看到另一账号的本机记录。
+- 视频报价：用相同清晰度、时长和参考图数量验证比较结果。各取一条按秒、按次和带参考图的任务，用任务编号对照 ScAI 已入账记录；冲突档位、变价、未知规则不得显示未经确认的金额。验证 MiniMax H3 的 2K、其他渠道的 4K 和自定义清晰度。
+- 视频任务：常规等待结束显示「等待查询」，查询和刷新均不创建第二条任务。没拿到任务编号显示「提交结果未确认」。验证完成视频可下载、临时链接不显示为已保存、预览旧作品不覆盖草稿，且「以此再创作」只回填参数。
+- 工作室预览：本地可在 `web` 目录运行 `SCAI_PREVIEW_PRICING=https://canvas.scai.my npm run dev -- --host 127.0.0.1` 后打开 `/video`。此模式只转发公开价目和站点状态，实际登录和扣费需在 HTTPS 验收环境核对。
 
 - Saved model selection: save a canvas node with a model, then remove its provider or remove that model while another video model remains the default. Generation, retry and pending-video recovery should keep the unavailable model selected and open configuration instead of sending a request to the default or first provider. Re-selecting a valid model should allow generation. Changing only the API key on the same provider should preserve the model; switching a config node from a valid image model to video should still use the video default.
 

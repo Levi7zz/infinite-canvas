@@ -41,6 +41,9 @@ function localPluginsManifest(): Plugin {
 export default defineConfig({
     base: process.env.VITE_BASE || "/",
     plugins: [react(), localPluginsManifest()],
+    server: process.env.SCAI_PREVIEW_PRICING ? {
+        proxy: { "^/new-api/api/(pricing|status)$": { target: process.env.SCAI_PREVIEW_PRICING, changeOrigin: true } },
+    } : undefined,
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

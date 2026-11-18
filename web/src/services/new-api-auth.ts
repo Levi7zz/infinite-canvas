@@ -54,7 +54,16 @@ type NewApiToken = {
 };
 
 type NewApiTokenAutoGroups = { groups?: string[]; max_count?: number };
-type NewApiUserGroups = Record<string, { desc?: string } | string>;
+type NewApiUserGroups = Record<string, { desc?: string; ratio?: number | string } | string>;
+type NewApiUser = { id: number; username: string; display_name?: string };
+
+export function scaiGroupKind(group: string, description = "") {
+    const kind = (value: string) => {
+        if (/视频|\bvideos?\b/i.test(value)) return "video";
+        if (/生图|图像|图片|绘图|\b(?:image|images|imagen|picture|photo)\b/i.test(value)) return "image";
+    };
+    return kind(group) || kind(description);
+}
 
 function bridgeUrl(path: string) {
     return `${NEW_API_PROXY_PATH}${path.startsWith("/") ? path : `/${path}`}`;
@@ -219,44 +228,43 @@ function tokenItems(payload: ApiEnvelope<{ items?: NewApiToken[] } | NewApiToken
 }
 
 async function listTokens(accessToken: string) {
-    const payload = await requestNewApi<{ items?: NewApiToken[] } | NewApiToken[]>("/api/token/?p=1&size=100", {}, accessToken);
+    const payload = await requestNewApi<{ items?: NewApiToken[] } | NewApiToken[]>(`/api/token/search?keyword=${encodeURIComponent(CANVAS_TOKEN_NAME)}`, {}, accessToken);
     return tokenItems(payload);
 }
 
-async function canvasAutoGroups(accessToken: string) {
-    const [autoPayload, userGroupsPayload] = await Promise.all([
+export async function provisionCanvasKey(accessToken: string, requireVideo = false) {
+    const [autoPayload, userGroupsPayload, userPayload, tokens] = await Promise.all([
         requestNewApi<NewApiTokenAutoGroups>("/api/token/auto-groups", {}, accessToken),
         requestNewApi<NewApiUserGroups>("/api/user/self/groups", {}, accessToken),
+        requestNewApi<NewApiUser>("/api/user/self", {}, accessToken),
+        listTokens(accessToken),
     ]);
-    const groups = autoPayload.data?.groups?.filter((group) => typeof group === "string" && group !== "auto") || [];
+    const user = userPayload.data;
+    if (!user?.id) throw new Error("无法读取 ScAI 账号信息，请重新登录");
     const userGroups = userGroupsPayload.data || {};
-    const description = (group: string) => {
+    const groups = (autoPayload.data?.groups || []).filter((group) => typeof group === "string" && group !== "auto" && Object.hasOwn(userGroups, group));
+    const kind = (group: string) => {
         const details = userGroups[group];
-        return typeof details === "string" ? details : details?.desc || "";
+        return scaiGroupKind(group, typeof details === "string" ? details : details?.desc);
     };
-    const matches = (group: string, pattern: RegExp) => pattern.test(`${group} ${description(group)}`);
-    const imageGroups = groups.filter((group) => matches(group, /生图|图片|图像|绘图|image|images|imagen|picture|photo/i));
-    const videoGroups = groups.filter((group) => matches(group, /视频|video/i));
-    if (!imageGroups.length || !videoGroups.length) {
-        throw new Error("无法识别账号下的生图和视频分组，请确认这两个分组已开放给当前账号");
+    const preferred = (capability: "video" | "image", exact: RegExp) => groups.find((group) => kind(group) === capability && exact.test(group)) || groups.find((group) => kind(group) === capability);
+    const video = preferred("video", /^(视频生成|视频|video)$/i);
+    const image = preferred("image", /^(图像生成|生图|image)$/i);
+    if (requireVideo && !video) throw new Error("这个 ScAI 账号没有可用的视频分组");
+    const autoGroups = groups.filter((group) => group === image || group === video);
+    if (!autoGroups.length) throw new Error("这个 ScAI 账号没有可用的生图或视频分组");
+    if (typeof autoPayload.data?.max_count === "number" && autoGroups.length > autoPayload.data.max_count) {
+        if (!requireVideo || !video || autoPayload.data.max_count < 1) throw new Error("账号可绑定的分组数量不足，请在 ScAI 检查令牌设置");
+        autoGroups.splice(0, autoGroups.length, video);
     }
-    const firstPreferred = (values: string[], exact: RegExp) => values.find((group) => exact.test(group.trim())) || values[0];
-    const selected = Array.from(new Set([firstPreferred(imageGroups, /^(?:生图|image|images|imagen)$/i), firstPreferred(videoGroups, /^(?:视频|video)$/i)]));
-    if (typeof autoPayload.data?.max_count === "number" && selected.length > autoPayload.data.max_count) {
-        throw new Error("账号允许选择的分组数量不足，无法同时配置生图和视频");
-    }
-    return selected;
-}
-
-function selectCanvasToken(tokens: NewApiToken[]) {
-    return tokens
-        .filter((token) => token.name === CANVAS_TOKEN_NAME && token.group === "auto" && token.id && (token.status === undefined || token.status === 1))
-        .sort((a, b) => (b.created_time || 0) - (a.created_time || 0))[0];
-}
-
-export async function provisionCanvasKey(accessToken: string) {
-    const autoGroups = await canvasAutoGroups(accessToken);
-    let token = selectCanvasToken(await listTokens(accessToken));
+    const groupRatios = Object.fromEntries(autoGroups.flatMap((group) => {
+        const details = userGroups[group];
+        const raw = typeof details === "object" && details ? details.ratio : undefined;
+        const ratio = typeof raw === "number" || (/^\d+(?:\.\d+)?$/.test(raw || "")) ? Number(raw) : NaN;
+        return Number.isFinite(ratio) && ratio >= 0 ? [[group, ratio]] : [];
+    }));
+    const account = { id: user.id, name: user.display_name || user.username, autoGroups, groupRatios, pricedAt: Date.now() };
+    let token = selectCanvasToken(tokens);
     if (!token?.id) {
         await requestNewApi("/api/token/", {
             method: "POST",
@@ -271,7 +279,7 @@ export async function provisionCanvasKey(accessToken: string) {
             }),
         }, accessToken);
         token = selectCanvasToken(await listTokens(accessToken));
-    } else if (!token.auto_groups || autoGroups.some((group) => !token?.auto_groups?.includes(group)) || token.auto_groups.length !== autoGroups.length) {
+    } else if (!token.auto_groups || autoGroups.length !== token.auto_groups.length || autoGroups.some((group, i) => group !== token?.auto_groups?.[i])) {
         await requestNewApi("/api/token/", {
             method: "PUT",
             body: JSON.stringify({
@@ -294,7 +302,13 @@ export async function provisionCanvasKey(accessToken: string) {
     if (!token?.id) throw new Error("无限画布 Key 创建后未找到，请检查账号的令牌权限");
     const keyPayload = await requestNewApi<{ key?: string }>(`/api/token/${token.id}/key`, { method: "POST" }, accessToken);
     if (!keyPayload.data?.key) throw new Error("ScAI 未返回无限画布 Key");
-    return keyPayload.data.key;
+    return { apiKey: keyPayload.data.key, account };
+}
+
+function selectCanvasToken(tokens: NewApiToken[]) {
+    return tokens
+        .filter((token) => token.name === CANVAS_TOKEN_NAME && token.group === "auto" && token.id && (token.status === undefined || token.status === 1))
+        .sort((a, b) => (b.created_time || 0) - (a.created_time || 0))[0];
 }
 
 export async function logoutNewApi(accessToken: string, sessionId: string) {

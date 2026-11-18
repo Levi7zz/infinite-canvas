@@ -118,7 +118,10 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const saveChannel = (channel: ModelChannel) => {
-        updateChannels(config.channels.map((item) => (item.id === channel.id ? channel : item)));
+        updateChannels(config.channels.map((item) => item.id !== channel.id ? item : {
+            ...channel,
+            scai: channel.apiKey === item.apiKey && channel.baseUrl === item.baseUrl ? item.scai : undefined,
+        }));
     };
 
     const refreshChannel = async (channel: ModelChannel, showMessage = true) => {
