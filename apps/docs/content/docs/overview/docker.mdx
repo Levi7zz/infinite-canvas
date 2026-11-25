@@ -9,6 +9,8 @@ Docker 镜像只包含纯 Web 版：nginx 托管静态页面，数据保存在�
 
 > 从 v0.20.0 及更早版本升级：1.0 不兼容旧版浏览器数据，升级后原有作品不会出现在新工作台。需要继续使用旧数据时，把 `docker-compose.yml` 中的镜像改为 `ghcr.io/basketikun/infinite-canvas:v0.20.0`。
 
+ScAI 分支在 `canvas.scai.my` 的 Web 入口启用账号一键配置。外层反向代理需保留 `deploy/canvas-new-api-proxy.conf` 对应的同源路径。其他部署可通过 `NEW_API_BASE_URL` 启用此功能，`NEW_API_PROXY_PATH` 默认是 `/new-api`。Passkey 登录要求 HTTPS，并需配置其 RP ID 对应的网页来源。
+
 ## 使用发布镜像
 
 ```bash
