@@ -58,6 +58,7 @@ export default function CreatePage() {
     const sessionParam = searchParams.get("session");
     const promptParam = searchParams.get("prompt");
     const runParam = searchParams.get("run");
+    const typeParam = searchParams.get("type");
     const appliedPrompt = useRef<string | null>(null);
     const [referenceFilesReady, setReferenceFilesReady] = useState(true);
     const [promptDialogOpen, setPromptDialogOpen] = useState(false);
@@ -159,8 +160,7 @@ export default function CreatePage() {
         if (appliedPrompt.current === promptParam) return;
         appliedPrompt.current = promptParam;
         setPrompt(promptParam);
-        const requestedType = searchParams.get("type");
-        if (requestedType === "agent" || requestedType === "image" || requestedType === "video" || requestedType === "audio") setType(requestedType);
+        if (typeParam === "agent" || typeParam === "image" || typeParam === "video" || typeParam === "audio") setType(typeParam);
         const next = new URLSearchParams(searchParams);
         next.delete("prompt");
         next.delete("type");
@@ -177,10 +177,11 @@ export default function CreatePage() {
         if (sessionParam || promptParam || runParam) return;
         const id = createSessionId();
         setActiveSessionId(id);
+        if (typeParam === "image" || typeParam === "video" || typeParam === "audio") setType(typeParam);
         setSearchParams({ session: id }, { replace: true });
         // 创作页没有指定对话时始终从空白对话开始，不自动打开最近记录。
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sessionParam, promptParam, runParam]);
+    }, [sessionParam, promptParam, runParam, typeParam]);
 
     useEffect(() => {
         if (!sessionParam || !loaded || !agent.ready || sessionParam === activeSessionId) return;

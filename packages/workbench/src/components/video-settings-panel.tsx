@@ -4,7 +4,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@infin
 
 import { type CanvasTheme } from "@workbench/lib/canvas-theme";
 import { normalizeGenerationOptions, visibleOptions } from "@workbench/lib/generation-options";
-import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseAspectRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions } from "@workbench/lib/media-size";
+import { clampVideoSeconds, computeVideoSize, inferVideoRatio, parseAspectRatio, parseVideoResolution, readVideoDimensions, VIDEO_SECONDS_MAX, VIDEO_SECONDS_MIN, videoRatioOptions, videoResolutionLabel } from "@workbench/lib/media-size";
 import { ArrowLeftRight } from "lucide-react";
 import { type AiConfig } from "@workbench/stores/use-config-store";
 
@@ -107,9 +107,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     );
 }
 
-export function videoResolutionLabel(value: string) {
-    return `${parseVideoResolution(value)}p`;
-}
+export { videoResolutionLabel };
 
 export function videoSizeLabel(value: string) {
     const ratio = inferVideoRatio(value);
@@ -165,9 +163,10 @@ function SettingGroup({ title, color, children }: { title: string; color: string
 }
 
 function ResolutionInput({ value, theme, onChange }: { value: string; theme: CanvasTheme; onChange: (value: string) => void }) {
+    const preset = value === "2k" || value === "4k";
     return (
         <label className="flex h-9 overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
-            <input type="number" min={1} className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />
+            <input type="number" min={1} aria-label="自定义清晰度" placeholder="自定义" className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" value={preset ? "" : value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />
             <span className="grid w-7 place-items-center pr-1" style={{ color: theme.node.muted }}>
                 p
             </span>

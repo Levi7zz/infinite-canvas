@@ -1,6 +1,6 @@
 import { generationLevelLabels } from "@workbench/constant/labels";
 import { audioFormatOptions, audioSpeedLabel, audioVoiceOptions } from "./audio-generation";
-import { mediaRatioOptions, mediaScaleOptions, videoRatioOptions } from "./media-size";
+import { mediaRatioOptions, mediaScaleOptions, videoRatioOptions, videoResolutionLabel } from "./media-size";
 
 /** 偏好设置中可增删的生成可选项，运行时面板只展示启用的项。 */
 export type GenerationOptionCategory =
@@ -20,7 +20,7 @@ export type GenerationOptions = Record<GenerationOptionCategory, GenerationOptio
 
 const qualityValues = ["auto", "low", "medium", "high", "xhigh", "max"];
 const imageCountValues = ["1", "2", "3", "4", "5", "6"];
-const videoResolutionValues = ["480", "720", "1080"];
+const videoResolutionValues = ["480", "720", "768", "1080", "2k", "4k"];
 const audioSpeedValues = ["0.75", "1", "1.25", "1.5"];
 
 const ratioLabel = (value: string) => value === "auto" ? "自动" : value;
@@ -44,7 +44,7 @@ export const generationOptionCatalog: Record<GenerationOptionCategory, { label: 
     },
     videoResolution: {
         label: "视频清晰度",
-        options: videoResolutionValues.map((value) => ({ value, label: `${value}p` })),
+        options: videoResolutionValues.map((value) => ({ value, label: videoResolutionLabel(value) })),
     },
     videoRatio: {
         label: "视频比例",

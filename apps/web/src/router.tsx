@@ -1,5 +1,5 @@
 import { PluginPageView } from "@infinite-canvas/workbench/components/plugins/plugin-contributions";
-import { createBrowserRouter, Outlet } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet } from "react-router-dom";
 
 import { AnalyticsTracker } from "@/components/layout/analytics-tracker";
 import UserLayout from "@infinite-canvas/workbench/layouts/user-layout";
@@ -25,6 +25,8 @@ export const router = createBrowserRouter([
             { path: "/", element: <HomePage /> },
             { path: "/create/history", element: <CreateHistoryPage /> },
             { path: "/create", element: <CreatePage /> },
+            { path: "/image", element: <Navigate to="/create?type=image" replace /> },
+            { path: "/video", element: <Navigate to="/create?type=video" replace /> },
             { path: "/assets", element: <AssetsPage /> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <CanvasPage /> },

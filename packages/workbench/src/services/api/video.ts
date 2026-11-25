@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { modelAssetUrl, type ModelAsset, ModelExecutionError } from "@infinite-canvas/shared/model-http";
 import { modelConnectionFingerprint } from "@infinite-canvas/shared/channels";
 
-import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@workbench/lib/media-size";
+import { clampVideoSeconds, computeVideoSize, inferVideoRatio, videoResolutionLabel } from "@workbench/lib/media-size";
 import { readMediaBlob, uploadMediaFile, type UploadedFile } from "@workbench/services/file-storage";
 import { boolConfig, channelWrites, encodeGroupModel, findGroupModel, resolveModelRequestConfig, type AiConfig } from "@workbench/stores/use-config-store";
 import { callScriptsReady } from "@workbench/stores/use-call-script-store";
@@ -60,7 +60,7 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
         images: references.map((image) => ({ url: image.url || image.dataUrl, storageKey: image.storageKey })),
         videos: options?.videos?.map((video) => ({ url: video.url, storageKey: video.storageKey })),
         audios: options?.audios?.map((audio) => ({ url: audio.url, storageKey: audio.storageKey })),
-        options: { seconds: clampVideoSeconds(config.videoSeconds), size: normalizeVideoSize(config.size, config.vquality), resolution: normalizeVideoResolution(config.vquality), ratio: ratio === "auto" ? "16:9" : ratio, generateAudio: boolConfig(config.videoGenerateAudio, true), watermark: boolConfig(config.videoWatermark, false), mode: resolveVideoMode(config.videoMode, references.length) },
+        options: { seconds: clampVideoSeconds(config.videoSeconds), size: normalizeVideoSize(config.size, config.vquality), resolution: videoResolutionLabel(config.vquality), ratio: ratio === "auto" ? "16:9" : ratio, generateAudio: boolConfig(config.videoGenerateAudio, true), watermark: boolConfig(config.videoWatermark, false), mode: resolveVideoMode(config.videoMode, references.length) },
     }, options);
     const identity = { model: encodeGroupModel(requestConfig.groupId, requestConfig.model), scriptId: requestConfig.scriptId, script: requestConfig.script };
     return "id" in result ? { ...identity, id: result.id } : { ...identity, id: nanoid(), result: result.result };
@@ -108,18 +108,14 @@ function resolveVideoMode(mode: string | undefined, imageCount: number): "frames
 }
 
 function normalizeVideoSize(value: string, resolution?: string) {
-    if (value === "auto") return null;
+    if (value === "auto") {
+        const label = videoResolutionLabel(resolution || "720");
+        return label === "2K" || label === "4K" || label === "768p" ? computeVideoSize(label, "16:9") : null;
+    }
     if (/^\d+x\d+$/.test(value || "")) return value;
     const ratio = inferVideoRatio(value || "16:9");
     if (ratio === "auto") return null;
     return computeVideoSize(resolution || "720", ratio);
-}
-
-function normalizeVideoResolution(value: string) {
-    if (value === "low") return "480p";
-    if (value === "auto" || value === "high" || value === "medium") return "720p";
-    const resolution = value.replace(/p$/i, "") || "720";
-    return `${resolution}p`;
 }
 
 function delay(ms: number, signal?: AbortSignal) {
