@@ -1,6 +1,7 @@
 import type { ObjectStorageConfig } from "@infinite-canvas/shared/object-storage";
 import { defaultWorkspaceConfig, workspaceConfigSchema, type WorkspaceConfig } from "@infinite-canvas/shared/workspace-config";
 import { workspaceConfig } from "./workspace-config/runtime";
+import { SCAI_CHANNEL_ID, SCAI_GROUP_ID } from "@workbench/constant/scai";
 import saveAs from "file-saver";
 
 import { callScriptsSaved, updateCallScripts, useCallScriptStore } from "@workbench/stores/use-call-script-store";
@@ -30,7 +31,11 @@ export async function exportAppConfig() {
     const { syncConnections, objectStorage } = await workspaceConfig.load() ?? defaultWorkspaceConfig;
     const { sources, schedule } = usePromptSourceStore.getState();
     const { scripts, removedBuiltinIds } = useCallScriptStore.getState();
-    const data: AppConfigFile = { app: "infinite-canvas", version: 7, exportedAt: new Date().toISOString(), config, callScripts: { scripts, removedBuiltinIds }, syncConnections, objectStorage, promptSources: { sources, schedule } };
+    const channels = config.channels.map((channel) => channel.id === SCAI_CHANNEL_ID ? {
+        ...channel,
+        groups: channel.groups.map((group) => group.id === SCAI_GROUP_ID ? { ...group, apiKey: "", hasApiKey: false } : group),
+    } : channel);
+    const data: AppConfigFile = { app: "infinite-canvas", version: 7, exportedAt: new Date().toISOString(), config: { ...config, channels }, callScripts: { scripts, removedBuiltinIds }, syncConnections, objectStorage, promptSources: { sources, schedule } };
     saveAs(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }), "infinite-canvas-config.json");
 }
 

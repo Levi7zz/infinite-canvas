@@ -9,4 +9,6 @@ export type RuntimeConfig = {
      * 百度统计站点 ID。
      */
     ANALYTICS_BAIDU_ID?: string;
+    NEW_API_BASE_URL?: string;
+    NEW_API_PROXY_PATH?: string;
 };

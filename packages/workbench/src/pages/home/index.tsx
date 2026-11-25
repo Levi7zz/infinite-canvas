@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type UIEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "motion/react";
 import { Plus } from "lucide-react";
+import { SCAI_ENABLED, SCAI_GROUP_ID } from "@workbench/constant/scai";
+import { network } from "@workbench/services/network/runtime";
 import type { CanvasAssetInput } from "@infinite-canvas/plugin-sdk";
 import { Button } from "@infinite-canvas/plugin-sdk/ui/button";
 import { cn } from "@infinite-canvas/plugin-sdk/ui/utils";
@@ -37,6 +39,9 @@ const MATERIALS_LOAD_AHEAD = 480;
 export default function HomePage() {
     const navigate = useNavigate();
     const config = useEffectiveConfig();
+    const showScaiLogin = SCAI_ENABLED && network.kind === "browser" && !config.channels.some(
+        (channel) => channel.groups.some((group) => group.id === SCAI_GROUP_ID && group.apiKey),
+    );
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const projects = useCanvasStore((state) => state.projects);
@@ -113,6 +118,7 @@ export default function HomePage() {
                 <h1 className="text-balance text-3xl font-semibold tracking-tight sm:text-[38px]">
                     {greeting()}，今天想要<span className="text-primary">创作</span>什么？
                 </h1>
+                {showScaiLogin ? <div className="mt-4"><Button type="button" variant="outline" onClick={() => useConfigStore.setState({ isScaiLoginOpen: true })}>登录 ScAI 账号</Button></div> : null}
                 <div className="relative mt-8 inline-flex items-center rounded-full border border-border bg-foreground/[0.03] p-1" aria-label="首页模式">
                     {(["create", "canvas"] as const).map((item) => <button key={item} type="button" aria-pressed={mode === item}
                         className={cn("relative h-9 min-w-32 rounded-full px-6 text-sm transition-colors", mode === item ? "font-medium text-background" : "text-muted-foreground hover:text-foreground")}

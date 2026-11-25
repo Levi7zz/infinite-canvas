@@ -1,23 +1,41 @@
 import { Button } from "@infinite-canvas/plugin-sdk/ui/button";
 import { Input } from "@infinite-canvas/plugin-sdk/ui/input";
-import { ExternalLink, Plus, Trash2 } from "lucide-react";
+import { ExternalLink, LogIn, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { useState } from "react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@infinite-canvas/plugin-sdk/ui/select";
 import { toast } from "sonner";
 import type { ModelChannel } from "@infinite-canvas/shared/channels";
 import { channelSponsors, type ChannelSponsor } from "@workbench/constant/channel-sponsors";
 import { createModelChannel, createModelGroup, normalizeChannelModels, updateChannels, useConfigStore } from "@workbench/stores/use-config-store";
 import { workbenchMessageOptions } from "@workbench/components/ui/sonner";
+import { SCAI_CHANNEL_ID, SCAI_ENABLED, SCAI_GROUP_ID } from "@workbench/constant/scai";
+import { network } from "@workbench/services/network/runtime";
+import { refreshScaiModels } from "@workbench/services/api/scai-models";
 import { ChannelEditorPanel } from "./channel-editor-panel";
 import { ChannelRemoveConfirmation } from "./channel-remove-confirmation";
 import styles from "./app-config-modal.module.css";
 import "./config-network.css";
 
 export function ConfigChannels({ signal }: { signal: AbortSignal }) {
+    const [refreshing, setRefreshing] = useState(false);
     const config = useConfigStore((state) => state.config);
     const requestedSelection = useConfigStore((state) => state.configSelection);
     const channels = config.channels;
     const selectedChannel = channels.find((channel) => channel.id === requestedSelection.channelId) ?? channels[0];
     const groupId = selectedChannel?.groups.find((group) => group.id === requestedSelection.groupId)?.id ?? selectedChannel?.groups[0]?.id;
+    const showScai = SCAI_ENABLED && network.kind === "browser";
+    const scaiConfigured = channels.some((item) => item.id === SCAI_CHANNEL_ID && item.groups.some((group) => group.id === SCAI_GROUP_ID && group.apiKey));
+    const refreshScai = async () => {
+        setRefreshing(true);
+        try {
+            const count = await refreshScaiModels(signal);
+            if (!signal.aborted) toast.success(`模型已更新，当前可用 ${count} 个`, workbenchMessageOptions.success);
+        } catch (error) {
+            if (!signal.aborted) toast.error(error instanceof Error ? error.message : "模型更新失败，请重试", workbenchMessageOptions.error);
+        } finally {
+            if (!signal.aborted) setRefreshing(false);
+        }
+    };
     // 只有当前渠道真正有了模型才切到分组与模型列表；名称、地址、密钥的变化都留在赞助商视图。
     const newChannel = Boolean(selectedChannel && !selectedChannel.groups.some((group) => group.models.length));
     const saveChannels = (next: ModelChannel[]) => {
@@ -47,7 +65,7 @@ export function ConfigChannels({ signal }: { signal: AbortSignal }) {
         useConfigStore.setState({ configSelection: { tab: "builtin:channels", channelId: channel.id, groupId: group.id } });
     };
     const deleteChannel = (id: string) => {
-        if (channels.length <= 1 && channels.some((channel) => channel.id === id)) {
+        if (!showScai && channels.length <= 1 && channels.some((channel) => channel.id === id)) {
             toast.warning("至少保留一个渠道", workbenchMessageOptions.warning);
             return;
         }
@@ -63,6 +81,10 @@ export function ConfigChannels({ signal }: { signal: AbortSignal }) {
     const chooseChannel = (id: string) => useConfigStore.setState({ configSelection: { tab: "builtin:channels", channelId: id, groupId: channels.find((channel) => channel.id === id)!.groups[0]?.id } });
     const chooseGroup = (id: string) => useConfigStore.setState({ configSelection: { tab: "builtin:channels", channelId: selectedChannel!.id, groupId: id } });
     return <div className={`${styles.channels} flex min-h-0 flex-1 flex-col`}>
+        {showScai ? <div className="flex shrink-0 flex-wrap gap-2 border-b border-(--channel-line) px-4 py-3">
+            <Button type="button" size="sm" variant={scaiConfigured ? "outline" : "default"} disabled={refreshing} onClick={() => useConfigStore.setState({ isScaiLoginOpen: true })}><LogIn className="size-4" />一键配置</Button>
+            {scaiConfigured ? <Button type="button" size="sm" variant="outline" disabled={refreshing} onClick={() => void refreshScai()}><RefreshCw className={refreshing ? "size-4 animate-spin" : "size-4"} />{refreshing ? "更新中…" : "更新模型"}</Button> : null}
+        </div> : null}
         <div data-channel-navigation className="settings-network generation-workspace-controls shrink-0 border-b border-(--channel-line) p-3 lg:hidden">
             <div className="mb-2 flex items-center justify-between text-xs"><span>渠道</span><Button type="button" variant="ghost" size="xs" aria-label="新增渠道" className="w-6 px-0!" onClick={addChannel}><Plus aria-hidden className="size-3.5" /></Button></div>
             <div className="flex items-center gap-2">
@@ -87,7 +109,7 @@ export function ConfigChannels({ signal }: { signal: AbortSignal }) {
                 {selectedChannel ? <div className="settings-network generation-workspace-controls shrink-0 border-b border-(--channel-line) p-4">
                     <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
                         <label className="grid min-w-0 gap-1.5 text-xs font-medium">渠道名称<Input className="settings-network-field text-sm! font-normal!" value={selectedChannel.name} onChange={(event) => updateChannel({ ...selectedChannel, name: event.target.value })} /></label>
-                        <label className="grid min-w-0 gap-1.5 text-xs font-medium">服务地址<Input className="settings-network-field text-sm! font-normal!" value={selectedChannel.baseUrl} onChange={(event) => updateChannel({ ...selectedChannel, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
+                        <label className="grid min-w-0 gap-1.5 text-xs font-medium">服务地址<Input className="settings-network-field text-sm! font-normal!" value={selectedChannel.baseUrl} readOnly={showScai && selectedChannel.id === SCAI_CHANNEL_ID} onChange={(event) => updateChannel({ ...selectedChannel, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
                     </div>
                 </div> : null}
                 {!newChannel ? <div data-channel-navigation className="settings-network generation-workspace-controls shrink-0 border-b border-(--channel-line) p-3 lg:hidden">

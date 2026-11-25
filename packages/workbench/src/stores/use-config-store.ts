@@ -7,6 +7,8 @@ import { toast } from "sonner";
 
 import { createSettingsWriter } from "@workbench/utils/settings-writer";
 import { channels } from "@workbench/services/channels/runtime";
+import { SCAI_ENABLED } from "@workbench/constant/scai";
+import { network } from "@workbench/services/network/runtime";
 import { defaultCallScriptId } from "@workbench/lib/model-utils";
 import { defaultGenerationOptions, normalizeGenerationOptions, type GenerationOptions } from "@workbench/lib/generation-options";
 import { workbenchMessageOptions } from "@workbench/components/ui/sonner";
@@ -93,6 +95,7 @@ export const defaultConfig: AiConfig = {
 type ConfigStore = {
     config: AiConfig;
     isConfigOpen: boolean;
+    isScaiLoginOpen: boolean;
     configSelection: { tab: string; channelId?: string; groupId?: string };
     configModel: string | null;
     autoFetchGroupId: string | null;
@@ -170,6 +173,7 @@ export const useConfigStore = create<ConfigStore>()(persist(
     (set) => ({
         config: defaultConfig,
         isConfigOpen: false,
+        isScaiLoginOpen: false,
         configSelection: { tab: "builtin:channels" },
         configModel: null,
         autoFetchGroupId: null,
@@ -284,7 +288,7 @@ export const channelWrites = createSettingsWriter(async (value: ModelChannel[]) 
 
 export async function loadChannelConfig() {
     const saved = await channels.load();
-    const initial = saved === null ? await channels.save(defaultConfig.channels) : saved;
+    const initial = saved === null ? await channels.save(SCAI_ENABLED && network.kind === "browser" ? [] : defaultConfig.channels) : saved;
     useConfigStore.setState((state) => ({ config: withChannels(state.config, initial.map(createModelChannel)) }));
     void importChannelFromUrl();
 }

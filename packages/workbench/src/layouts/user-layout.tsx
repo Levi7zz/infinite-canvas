@@ -13,6 +13,9 @@ import { AppSidebar } from "@workbench/components/layout/app-sidebar";
 import { AppTopBar } from "@workbench/components/layout/app-top-bar";
 import { AppTopNav } from "@workbench/components/layout/app-top-nav";
 import { StorageNotice } from "@workbench/components/layout/storage-notice";
+import { ScaiLoginDialog } from "@workbench/components/layout/scai-login-dialog";
+import { SCAI_ENABLED } from "@workbench/constant/scai";
+import { network } from "@workbench/services/network/runtime";
 import { UserStatusActions } from "@workbench/components/layout/user-status-actions";
 import { PluginBoundary } from "@workbench/components/plugins/plugin-contributions";
 import { NavigationCatalogContext, NavigationContext } from "@workbench/constant/navigation-tools";
@@ -115,6 +118,7 @@ export default function UserLayout({ children }: { children: ReactNode }) {
             </div>
             {createPortal(children, pageRoot)}
             <StorageNotice>{(noticeOpen) => <AppConfigModal noticeOpen={noticeOpen} />}</StorageNotice>
+            {SCAI_ENABLED && network.kind === "browser" ? <ScaiLoginDialog /> : null}
             <CanvasMcpBridge />
             <AgentPanel />
         </div>

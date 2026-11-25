@@ -73,7 +73,7 @@ export function initAnalytics() {
 export function trackPageview(path: string) {
     try {
         if (active.ga4 && window.gtag) {
-            window.gtag("event", "page_view", { page_path: path, page_location: window.location.href });
+            window.gtag("event", "page_view", { page_path: path, page_location: `${window.location.origin}${path}` });
         }
         if (active.baidu && window._hmt) {
             window._hmt.push(["_trackPageview", path]);
