@@ -2,7 +2,7 @@ import type { ChannelModel, ModelChannel, ModelGroup } from "@infinite-canvas/sh
 import { SCAI_BASE_URL, SCAI_CHANNEL_ID, SCAI_GROUP_ID, SCAI_IMAGE_GROUP, SCAI_PROXY_PATH, SCAI_VIDEO_GROUP } from "@workbench/constant/scai";
 import { guessCapability } from "@workbench/lib/model-utils";
 import { channels } from "@workbench/services/channels/runtime";
-import { channelWrites, createModelChannel, createModelGroup, updateChannels, useConfigStore } from "@workbench/stores/use-config-store";
+import { channelWrites, createModelChannel, createModelGroup, encodeGroupModel, modelCapabilityOf, updateChannels, useConfigStore } from "@workbench/stores/use-config-store";
 
 type CatalogModel = { model_name: string; enable_groups?: string[] };
 
@@ -53,6 +53,15 @@ export async function configureScaiChannel(apiKey: string) {
     channel.groups = [{ ...group, models }, ...(current?.groups.filter((item) => item.id !== group.id) ?? [])];
     await updateChannels([...all.filter((item) => item.id !== channel.id), channel]);
     const state = useConfigStore.getState();
+    for (const [capability, key] of [["image", "imageModel"], ["video", "videoModel"]] as const) {
+        const currentModel = state.config[key];
+        if (modelCapabilityOf(state.config, currentModel) === capability && state.isAiConfigReady(state.config, currentModel)) continue;
+        const defaultModel = models
+            .filter((model) => model.capability === capability)
+            .map((model) => encodeGroupModel(group.id, model.name))
+            .find((value) => state.isAiConfigReady(state.config, value));
+        if (defaultModel) state.updateConfig(key, defaultModel);
+    }
     if (state.isConfigOpen) {
         useConfigStore.setState({ configSelection: { tab: "builtin:channels", channelId: channel.id, groupId: group.id } });
     }
