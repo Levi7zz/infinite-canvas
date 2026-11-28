@@ -4,7 +4,7 @@ import { guessCapability } from "@workbench/lib/model-utils";
 import { channels } from "@workbench/services/channels/runtime";
 import { channelWrites, createModelChannel, createModelGroup, encodeGroupModel, modelCapabilityOf, updateChannels, useConfigStore } from "@workbench/stores/use-config-store";
 
-type CatalogModel = { model_name: string; enable_groups?: string[] };
+type CatalogModel = { model_name: string; enable_groups?: string[]; supported_endpoint_types?: string[] };
 
 async function readCatalog(signal?: AbortSignal): Promise<Map<string, CatalogModel>> {
     try {
@@ -22,18 +22,18 @@ async function listScaiModels(channel: ModelChannel, group: ModelGroup, signal?:
     const [names, catalog] = await Promise.all([channels.listModels(channel, group, "openai", signal), readCatalog(signal)]);
     const existing = new Map(group.models.map((model) => [model.name, model]));
     return [...new Set(names)].flatMap((name): ChannelModel[] => {
-        const upstreamGroups = catalog.get(name)?.enable_groups ?? [];
-        const capability = upstreamGroups.some((item) => SCAI_VIDEO_GROUP.test(item)) ? "video"
-            : upstreamGroups.some((item) => SCAI_IMAGE_GROUP.test(item)) ? "image"
-            : /^minimax-h[\d.]+(?:-|$)/i.test(name) ? "video" : guessCapability(name);
         const current = existing.get(name);
-        if (current) return [current];
+        const entry = catalog.get(name);
+        const upstreamGroups = entry?.enable_groups ?? [];
+        const capability = upstreamGroups.some((item) => SCAI_VIDEO_GROUP.test(item)) ? "video"
+            : upstreamGroups.some((item) => SCAI_IMAGE_GROUP.test(item)) || entry?.supported_endpoint_types?.includes("image-generation") ? "image"
+            : current?.capability === "image" || current?.capability === "video" ? current.capability
+            : /^minimax-h[\d.]+(?:-|$)/i.test(name) ? "video" : guessCapability(name);
+        if (capability !== "image" && capability !== "video") return [];
+        if (current?.capability === capability) return [current];
         if (capability === "video") return [{ name, capability, scriptId: "openai-video" }];
-        if (capability === "image") {
-            const gemini = /^(?:gemini|imagen)(?:[-/]|$)|nano[-_ ]?banana/i.test(name);
-            return [{ name, capability, scriptId: gemini ? "gemini-image" : "openai-image" }];
-        }
-        return [];
+        const gemini = /^(?:gemini|imagen)(?:[-/]|$)|nano[-_ ]?banana/i.test(name);
+        return [{ name, capability, scriptId: gemini ? "gemini-image" : "openai-image" }];
     });
 }
 
@@ -79,7 +79,11 @@ export async function refreshScaiModels(signal: AbortSignal) {
     const latestGroup = latest?.groups.find((item) => item.id === group.id);
     if (!latest || !latestGroup || latest.baseUrl !== channel.baseUrl || latestGroup.apiKey !== group.apiKey) throw new Error("渠道已变更，请重新同步");
     const overrides = new Map(latestGroup.models.map((model) => [model.name, model]));
-    const next = { ...latest, groups: latest.groups.map((item) => item === latestGroup ? { ...item, models: models.map((model) => overrides.get(model.name) ?? model) } : item) };
+    const updatedModels = models.map((model) => {
+        const current = overrides.get(model.name);
+        return current?.capability === model.capability ? current : model;
+    });
+    const next = { ...latest, groups: latest.groups.map((item) => item === latestGroup ? { ...item, models: updatedModels } : item) };
     await updateChannels(all.map((item) => item === latest ? next : item));
     return models.length;
 }
