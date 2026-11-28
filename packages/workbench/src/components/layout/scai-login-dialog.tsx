@@ -57,6 +57,7 @@ function ScaiLoginForm({ backToSettings }: { backToSettings: boolean }) {
         working.current = true;
         setBusy(true);
         setError("");
+        let fallbackError = verification ? "验证失败，请重试" : "ScAI 登录失败，请检查账号和密码后重试";
         try {
             const pending = verification;
             let result: NewApiLoginResult;
@@ -78,6 +79,7 @@ function ScaiLoginForm({ backToSettings }: { backToSettings: boolean }) {
                 setVerification(result);
                 return;
             }
+            fallbackError = "ScAI 配置失败，请重试";
             try {
                 await configureScaiChannel(await provisionCanvasKey(result.accessToken));
             } finally {
@@ -91,7 +93,8 @@ function ScaiLoginForm({ backToSettings }: { backToSettings: boolean }) {
                 setRpId(reason.alternativeRpIds[0] || "");
                 setError("Passkey 验证已取消或超时，可以重试。");
             } else {
-                setError(reason instanceof Error ? reason.message.replaceAll("New API", "ScAI") : "配置失败，请重试");
+                const message = reason instanceof Error ? reason.message.replaceAll("New API", "ScAI") : "";
+                setError(/\p{Script=Han}/u.test(message) ? message : fallbackError);
             }
         } finally {
             working.current = false;

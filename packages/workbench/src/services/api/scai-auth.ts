@@ -62,6 +62,7 @@ function bridgeUrl(path: string) {
 
 async function requestNewApi<T>(path: string, init: RequestInit = {}, accessToken = "") {
     const headers = new Headers(init.headers);
+    headers.set("accept-language", "zh-CN");
     if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
     if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
     const response = await fetch(bridgeUrl(path), { ...init, headers, credentials: "same-origin", cache: "no-store", redirect: "error" });
